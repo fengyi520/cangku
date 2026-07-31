@@ -1,0 +1,535 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum StockStatus {
+  SELLABLE
+  INSPECTION
+  DAMAGED
+}
+
+enum DocumentType {
+  INBOUND
+  OUTBOUND
+  RETURN
+  STOCKTAKE
+  ADJUSTMENT
+  RESTORE
+}
+
+enum DocumentStatus {
+  DRAFT
+  PENDING_APPROVAL
+  CONFIRMED
+  RESERVED
+  POSTED
+  CANCELLED
+  REVERSED
+}
+
+enum JobStatus {
+  QUEUED
+  PROCESSING
+  REVIEW
+  COMPLETED
+  FAILED
+}
+
+enum ImportKind {
+  CATALOG
+  INBOUND
+  OUTBOUND
+  STOCKTAKE
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum DailyOutboundStatus {
+  OPEN
+  PROCESSING
+  POSTED
+  FAILED
+  REVERSED
+}
+
+enum DailyOutboundKind {
+  AUTOMATIC
+  SUPPLEMENT
+}
+
+enum SimpleImportKind {
+  INBOUND
+  OUTBOUND
+}
+
+enum SimpleImportStatus {
+  REVIEW
+  PROCESSING
+  COMPLETED
+}
+
+model Organization {
+  id                   String                       @id @default(cuid())
+  name                 String
+  createdAt            DateTime                     @default(now())
+  warehouses           Warehouse[]
+  roles                Role[]
+  users                User[]
+  styles               ProductStyle[]
+  documents            StockDocument[]
+  ledgerEntries        InventoryLedgerEntry[]
+  imports              ImportJob[]
+  exports              ExportJob[]
+  auditEvents          AuditEvent[]
+  notifications        Notification[]
+  mappingTemplates     MappingTemplate[]
+  automationSettings   WarehouseAutomationSetting[]
+  dailyOutboundBatches DailyOutboundBatch[]
+  simpleImports        SimpleImportSession[]
+}
+
+model Warehouse {
+  id                   String                 @id @default(cuid())
+  organizationId       String
+  code                 String
+  name                 String
+  active               Boolean                @default(true)
+  createdAt            DateTime               @default(now())
+  organization         Organization           @relation(fields: [organizationId], references: [id])
+  balances             StockBalance[]
+  documents            StockDocument[]
+  ledgerEntries        InventoryLedgerEntry[]
+  imports              ImportJob[]
+  simpleImports        SimpleImportSession[]
+  dailyOutboundBatches DailyOutboundBatch[]
+
+  @@unique([organizationId, code])
+}
+
+model Role {
+  id             String       @id @default(cuid())
+  organizationId String
+  code           String
+  name           String
+  permissions    String[]
+  system         Boolean      @default(false)
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  users          User[]
+
+  @@unique([organizationId, code])
+}
+
+model User {
+  id                          String                       @id @default(cuid())
+  organizationId              String
+  roleId                      String
+  email                       String                       @unique
+  name                        String
+  passwordHash                String
+  status                      UserStatus                   @default(ACTIVE)
+  createdAt                   DateTime                     @default(now())
+  updatedAt                   DateTime                     @updatedAt
+  organization                Organization                 @relation(fields: [organizationId], references: [id])
+  role                        Role                         @relation(fields: [roleId], references: [id])
+  sessions                    Session[]
+  createdDocs                 StockDocument[]              @relation("CreatedDocuments")
+  postedDocs                  StockDocument[]              @relation("PostedDocuments")
+  approvalTasks               ApprovalTask[]               @relation("ApprovalAssignee")
+  approvalActions             ApprovalTask[]               @relation("ApprovalActor")
+  ledgerEntries               InventoryLedgerEntry[]
+  importJobs                  ImportJob[]
+  exportJobs                  ExportJob[]
+  auditEvents                 AuditEvent[]
+  notifications               Notification[]
+  automationSettings          WarehouseAutomationSetting[]
+  createdDailyOutboundBatches DailyOutboundBatch[]         @relation("DailyOutboundCreatedBy")
+  updatedDailyOutboundBatches DailyOutboundBatch[]         @relation("DailyOutboundUpdatedBy")
+  simpleImports               SimpleImportSession[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model ProductStyle {
+  id             String       @id @default(cuid())
+  organizationId String
+  styleNo        String
+  name           String
+  brand          String?
+  category       String?
+  season         String?
+  year           Int?
+  imageUrls      String[]
+  attributes     Json         @default("{}")
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  skus           Sku[]
+
+  @@unique([organizationId, styleNo])
+  @@index([organizationId, name])
+}
+
+model Sku {
+  id                 String                 @id @default(cuid())
+  styleId            String
+  skuCode            String                 @unique
+  color              String
+  size               String
+  minStock           Int                    @default(0)
+  active             Boolean                @default(true)
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  style              ProductStyle           @relation(fields: [styleId], references: [id], onDelete: Cascade)
+  balances           StockBalance[]
+  documentLines      StockDocumentLine[]
+  ledgerEntries      InventoryLedgerEntry[]
+  importRows         ImportRow[]
+  dailyOutboundLines DailyOutboundLine[]
+
+  @@unique([styleId, color, size])
+  @@index([styleId, color, size])
+}
+
+model StockBalance {
+  id          String      @id @default(cuid())
+  warehouseId String
+  skuId       String
+  status      StockStatus
+  onHand      Int         @default(0)
+  reserved    Int         @default(0)
+  version     Int         @default(1)
+  updatedAt   DateTime    @updatedAt
+  warehouse   Warehouse   @relation(fields: [warehouseId], references: [id])
+  sku         Sku         @relation(fields: [skuId], references: [id])
+
+  @@unique([warehouseId, skuId, status])
+  @@index([warehouseId, status, onHand])
+}
+
+model StockDocument {
+  id                    String                 @id @default(cuid())
+  organizationId        String
+  warehouseId           String
+  documentNo            String                 @unique
+  type                  DocumentType
+  status                DocumentStatus         @default(DRAFT)
+  sourceRef             String?
+  counterparty          String?
+  reason                String?
+  version               Int                    @default(1)
+  idempotencyKey        String?                @unique
+  postKey               String?                @unique
+  reversalOfId          String?                @unique
+  restoreToAt           DateTime?
+  createdById           String
+  postedById            String?
+  postedAt              DateTime?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  organization          Organization           @relation(fields: [organizationId], references: [id])
+  warehouse             Warehouse              @relation(fields: [warehouseId], references: [id])
+  createdBy             User                   @relation("CreatedDocuments", fields: [createdById], references: [id])
+  postedBy              User?                  @relation("PostedDocuments", fields: [postedById], references: [id])
+  lines                 StockDocumentLine[]
+  ledgerEntries         InventoryLedgerEntry[]
+  approvals             ApprovalTask[]
+  dailyOutboundBatch    DailyOutboundBatch?    @relation("DailyOutboundDocument")
+  dailyOutboundReversal DailyOutboundBatch?    @relation("DailyOutboundReversal")
+  simpleImport          SimpleImportSession?
+  sourceImports         ImportJob[]
+  reversalOf            StockDocument?         @relation("DocumentReversal", fields: [reversalOfId], references: [id])
+  reversal              StockDocument?         @relation("DocumentReversal")
+
+  @@index([organizationId, type, status, createdAt])
+  @@index([organizationId, sourceRef])
+}
+
+model StockDocumentLine {
+  id                      String                 @id @default(cuid())
+  documentId              String
+  skuId                   String
+  stockStatus             StockStatus            @default(SELLABLE)
+  cartons                 Int                    @default(0)
+  piecesPerCarton         Int                    @default(0)
+  loosePieces             Int                    @default(0)
+  quantityPieces          Int
+  snapshotQuantity        Int?
+  countedPieces           Int?
+  adjustmentDelta         Int?
+  reservedAdjustmentDelta Int?
+  restoreTargetOnHand     Int?
+  restoreTargetReserved   Int?
+  note                    String?
+  document                StockDocument          @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  sku                     Sku                    @relation(fields: [skuId], references: [id])
+  ledgerEntries           InventoryLedgerEntry[]
+
+  @@index([documentId])
+  @@index([skuId])
+}
+
+model InventoryLedgerEntry {
+  id             String            @id @default(cuid())
+  organizationId String
+  warehouseId    String
+  skuId          String
+  documentId     String
+  documentLineId String
+  stockStatus    StockStatus
+  quantityDelta  Int
+  reservedDelta  Int               @default(0)
+  balanceAfter   Int
+  reservedAfter  Int
+  actorId        String
+  createdAt      DateTime          @default(now())
+  organization   Organization      @relation(fields: [organizationId], references: [id])
+  warehouse      Warehouse         @relation(fields: [warehouseId], references: [id])
+  sku            Sku               @relation(fields: [skuId], references: [id])
+  document       StockDocument     @relation(fields: [documentId], references: [id])
+  documentLine   StockDocumentLine @relation(fields: [documentLineId], references: [id])
+  actor          User              @relation(fields: [actorId], references: [id])
+
+  @@index([organizationId, skuId, createdAt])
+  @@index([warehouseId, skuId, stockStatus, createdAt])
+  @@index([documentId])
+}
+
+model ApprovalTask {
+  id         String         @id @default(cuid())
+  documentId String
+  assigneeId String?
+  actorId    String?
+  status     ApprovalStatus @default(PENDING)
+  comment    String?
+  createdAt  DateTime       @default(now())
+  decidedAt  DateTime?
+  document   StockDocument  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  assignee   User?          @relation("ApprovalAssignee", fields: [assigneeId], references: [id])
+  actor      User?          @relation("ApprovalActor", fields: [actorId], references: [id])
+
+  @@index([status, createdAt])
+}
+
+model ImportJob {
+  id             String       @id @default(cuid())
+  organizationId String
+  warehouseId    String
+  kind           ImportKind
+  status         JobStatus    @default(QUEUED)
+  fileName       String
+  objectKey      String
+  mimeType       String
+  progress       Int          @default(0)
+  error          String?
+  sourceName     String?
+  expiresAt      DateTime
+  createdById    String
+  appliedDocumentId String?
+  appliedAt      DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  warehouse      Warehouse    @relation(fields: [warehouseId], references: [id])
+  createdBy      User         @relation(fields: [createdById], references: [id])
+  appliedDocument StockDocument? @relation(fields: [appliedDocumentId], references: [id], onDelete: SetNull)
+  rows           ImportRow[]
+
+  @@index([organizationId, warehouseId, status, createdAt])
+  @@index([appliedDocumentId])
+}
+
+model ImportRow {
+  id               String    @id @default(cuid())
+  importJobId      String
+  rowNumber        Int
+  raw              Json
+  normalized       Json
+  confidence       Float
+  validationErrors String[]
+  accepted         Boolean   @default(false)
+  skuId            String?
+  importJob        ImportJob @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+  sku              Sku?      @relation(fields: [skuId], references: [id])
+
+  @@unique([importJobId, rowNumber])
+}
+
+model MappingTemplate {
+  id             String       @id @default(cuid())
+  organizationId String
+  sourceName     String
+  kind           ImportKind
+  mapping        Json
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, sourceName, kind])
+}
+
+model ExportJob {
+  id             String       @id @default(cuid())
+  organizationId String
+  status         JobStatus    @default(QUEUED)
+  prompt         String
+  reportSpec     Json
+  format         String
+  objectKey      String?
+  progress       Int          @default(0)
+  error          String?
+  expiresAt      DateTime
+  createdById    String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdBy      User         @relation(fields: [createdById], references: [id])
+
+  @@index([organizationId, status, createdAt])
+}
+
+model AuditEvent {
+  id             String       @id @default(cuid())
+  organizationId String
+  actorId        String
+  action         String
+  entityType     String
+  entityId       String
+  before         Json?
+  after          Json?
+  ip             String?
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  actor          User         @relation(fields: [actorId], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@index([entityType, entityId])
+}
+
+model Notification {
+  id             String       @id @default(cuid())
+  organizationId String
+  userId         String
+  type           String
+  title          String
+  message        String
+  entityType     String?
+  entityId       String?
+  readAt         DateTime?
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  user           User         @relation(fields: [userId], references: [id])
+
+  @@index([userId, readAt, createdAt])
+}
+
+model WarehouseAutomationSetting {
+  id               String       @id @default(cuid())
+  organizationId   String
+  autoOutboundTime String
+  timezone         String       @default("Asia/Shanghai")
+  effectiveFrom    DateTime     @db.Date
+  createdById      String
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  organization     Organization @relation(fields: [organizationId], references: [id])
+  createdBy        User         @relation(fields: [createdById], references: [id])
+
+  @@unique([organizationId, effectiveFrom])
+  @@index([organizationId, effectiveFrom])
+}
+
+model DailyOutboundBatch {
+  id                 String                @id @default(cuid())
+  organizationId     String
+  warehouseId        String
+  businessDate       DateTime              @db.Date
+  kind               DailyOutboundKind     @default(AUTOMATIC)
+  sequence           Int                   @default(0)
+  status             DailyOutboundStatus   @default(OPEN)
+  scheduledAt        DateTime
+  version            Int                   @default(1)
+  error              String?
+  createdById        String
+  updatedById        String
+  documentId         String?               @unique
+  reversalDocumentId String?               @unique
+  postedAt           DateTime?
+  reversedAt         DateTime?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  organization       Organization          @relation(fields: [organizationId], references: [id])
+  warehouse          Warehouse             @relation(fields: [warehouseId], references: [id])
+  createdBy          User                  @relation("DailyOutboundCreatedBy", fields: [createdById], references: [id])
+  updatedBy          User                  @relation("DailyOutboundUpdatedBy", fields: [updatedById], references: [id])
+  document           StockDocument?        @relation("DailyOutboundDocument", fields: [documentId], references: [id])
+  reversalDocument   StockDocument?        @relation("DailyOutboundReversal", fields: [reversalDocumentId], references: [id])
+  lines              DailyOutboundLine[]
+  simpleImports      SimpleImportSession[]
+
+  @@unique([organizationId, businessDate, sequence])
+  @@index([status, scheduledAt])
+  @@index([organizationId, businessDate, createdAt])
+}
+
+model DailyOutboundLine {
+  id        String             @id @default(cuid())
+  batchId   String
+  skuId     String
+  quantity  Int
+  note      String?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  batch     DailyOutboundBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  sku       Sku                @relation(fields: [skuId], references: [id])
+
+  @@unique([batchId, skuId])
+  @@index([skuId])
+}
+
+model SimpleImportSession {
+  id             String              @id @default(cuid())
+  organizationId String
+  warehouseId    String
+  kind           SimpleImportKind
+  businessDate   DateTime?           @db.Date
+  fileName       String
+  fileHash       String
+  dedupKey       String              @unique
+  rows           Json
+  status         SimpleImportStatus  @default(REVIEW)
+  createdById    String
+  documentId     String?             @unique
+  dailyBatchId   String?
+  createdAt      DateTime            @default(now())
+  completedAt    DateTime?
+  organization   Organization        @relation(fields: [organizationId], references: [id])
+  warehouse      Warehouse           @relation(fields: [warehouseId], references: [id])
+  createdBy      User                @relation(fields: [createdById], references: [id])
+  document       StockDocument?      @relation(fields: [documentId], references: [id])
+  dailyBatch     DailyOutboundBatch? @relation(fields: [dailyBatchId], references: [id])
+
+  @@index([organizationId, warehouseId, kind, status, createdAt])
+}

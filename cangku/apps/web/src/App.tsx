@@ -1,0 +1,702 @@
+import { ReactNode, useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  AlertTriangle,
+  Archive,
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  Bell,
+  Boxes,
+  Check,
+  ChevronDown,
+  Clock3,
+  ClipboardCheck,
+  ClipboardList,
+  Download,
+  FileClock,
+  FileSpreadsheet,
+  History,
+  LayoutDashboard,
+  LogIn,
+  LogOut,
+  Menu,
+  PackageCheck,
+  Pencil,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  Settings,
+  ShieldCheck,
+  Shirt,
+  SlidersHorizontal,
+  Sparkles,
+  Trash2,
+  Upload,
+  UserPlus,
+  Users,
+  X,
+} from "lucide-react";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
+import { api, ApiError, downloadExport, jsonBody } from "./api";
+import { DailyOutboundPage } from "./DailyOutboundPage";
+import { GoodsOrderEditorPage } from "./GoodsOrderEditorPage";
+import { colorSlot, signed, splitList } from "./domain";
+import { SimpleImportDialog } from "./SimpleImportDialog";
+import type { Approval, AuditEvent, AutomationSettings, ExportJob, ImportJob, InventoryRow, Notification, Role, Sku, StockDocument, Style, User } from "./types";
+
+const typeLabels: Record<string, string> = {
+  INBOUND: "入库",
+  OUTBOUND: "出库",
+  RETURN: "退货",
+  STOCKTAKE: "盘点",
+  ADJUSTMENT: "库存调整",
+};
+
+const statusLabels: Record<string, string> = {
+  DRAFT: "草稿",
+  PENDING_APPROVAL: "待审批",
+  CONFIRMED: "已确认",
+  RESERVED: "已预留",
+  POSTED: "已过账",
+  CANCELLED: "已取消",
+  REVERSED: "已冲销",
+  QUEUED: "排队中",
+  PROCESSING: "处理中",
+  REVIEW: "待确认",
+  COMPLETED: "已完成",
+  FAILED: "失败",
+  PENDING: "待审批",
+  APPROVED: "已通过",
+  REJECTED: "已驳回",
+};
+
+function emitToast(message: string, tone: "success" | "error" = "success") {
+  window.dispatchEvent(new CustomEvent("cangku:toast", { detail: { message, tone } }));
+}
+
+function errorText(error: unknown) {
+  return error instanceof Error ? error.message : "操作失败，请稍后重试";
+}
+
+function can(user: User, permission: string) {
+  if (user.role.permissions.includes("*") || user.role.permissions.includes(permission)) return true;
+  const [resource, action] = permission.split(".");
+  return action === "view" && user.role.permissions.includes(`${resource}.manage`);
+}
+
+export function App() {
+  const me = useQuery({ queryKey: ["me"], queryFn: () => api<{ user: User }>("/auth/me"), retry: false });
+  if (me.isLoading) return <AppLoading />;
+  if (me.error instanceof ApiError && me.error.status === 401) return <LoginPage />;
+  if (!me.data) return <FatalState message={errorText(me.error)} onRetry={() => me.refetch()} />;
+  return (
+    <ToastHost>
+      <AppShell user={me.data.user} />
+    </ToastHost>
+  );
+}
+
+function AppLoading() {
+  return (
+    <div className="boot-screen">
+      <div className="brand-mark"><Boxes size={24} /></div>
+      <div className="boot-line" />
+      <span>正在连接仓库账本</span>
+    </div>
+  );
+}
+
+function LoginPage() {
+  const queryClient = useQueryClient();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const login = useMutation({
+    mutationFn: () => api("/auth/login", { method: "POST", body: jsonBody({ email, password }) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["me"] }),
+  });
+  return (
+    <main className="login-page">
+      <section className="login-identity">
+        <div className="brand-lockup"><span className="brand-mark"><Boxes size={25} /></span><span>云裳仓库</span></div>
+        <div className="login-matrix" aria-hidden="true">
+          {["S", "M", "L", "XL"].map((size, column) => (
+            <div key={size} className="login-matrix-column">
+              <span>{size}</span>
+              {[62, 84, 41, 97].map((value, row) => <b key={row} style={{ opacity: 0.3 + ((value + column * 13 + row * 7) % 60) / 100 }}>{value + column * 3 - row}</b>)}
+            </div>
+          ))}
+        </div>
+        <div className="login-copy">
+          <p className="eyebrow">单仓协作系统</p>
+          <h1>每一件库存，<br />都有清楚来路。</h1>
+          <p>款色尺码、收发盘退、审批审计与 AI 文件处理都回到同一本库存账。</p>
+        </div>
+      </section>
+      <section className="login-form-wrap">
+        <form className="login-form" onSubmit={(event) => { event.preventDefault(); login.mutate(); }}>
+          <div>
+            <p className="eyebrow">安全登录</p>
+            <h2>进入主仓</h2>
+          </div>
+          <label>登录邮箱<input aria-label="登录邮箱" type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" /></label>
+          <label>密码<input aria-label="密码" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></label>
+          {login.error && <ErrorBanner>{errorText(login.error)}</ErrorBanner>}
+          <button className="button primary wide" disabled={login.isPending}><LogIn size={17} />{login.isPending ? "正在验证" : "登录系统"}</button>
+          <p className="form-footnote">连续登录失败会触发请求限流。登录后所有库存操作都会写入审计记录。</p>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+const navItems = [
+  { to: "/", label: "总览", icon: LayoutDashboard, permission: "dashboard.view" },
+  { to: "/inventory", label: "库存", icon: Boxes, permission: "inventory.view" },
+  { to: "/catalog", label: "商品", icon: Shirt, permission: "catalog.view" },
+  { to: "/documents/INBOUND", label: "入库", icon: ArrowDownToLine, permission: "documents.manage" },
+  { to: "/daily-outbound", label: "今日出库", icon: Clock3, permission: "documents.manage" },
+  { to: "/documents/OUTBOUND", label: "出库", icon: ArrowUpFromLine, permission: "documents.manage" },
+  { to: "/documents/RETURN", label: "退货", icon: RotateCcw, permission: "documents.manage" },
+  { to: "/documents/STOCKTAKE", label: "盘点", icon: ClipboardCheck, permission: "documents.manage" },
+  { to: "/imports", label: "AI 导入", icon: Sparkles, permission: "imports.manage" },
+  { to: "/reports", label: "报表", icon: FileSpreadsheet, permission: "reports.export" },
+  { to: "/approvals", label: "审批", icon: ShieldCheck, permission: "approvals.view" },
+  { to: "/audit", label: "审计", icon: History, permission: "audit.view" },
+  { to: "/members", label: "成员", icon: Users, permission: "members.manage" },
+  { to: "/settings", label: "设置", icon: Settings, permission: "settings.manage" },
+];
+
+function AppShell({ user }: { user: User }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const notifications = useQuery({ queryKey: ["notifications"], queryFn: () => api<Notification[]>("/notifications"), refetchInterval: 30_000 });
+  const unread = notifications.data?.filter((item) => !item.readAt).length ?? 0;
+  const logout = useMutation({
+    mutationFn: () => api("/auth/logout", { method: "POST" }),
+    onSuccess: () => { queryClient.clear(); navigate("/"); window.location.reload(); },
+  });
+  const visibleNav = navItems.filter((item) => can(user, item.permission));
+
+  return (
+    <div className="app-shell">
+      <aside className={`sidebar ${menuOpen ? "open" : ""}`}>
+        <div className="brand-lockup sidebar-brand"><span className="brand-mark"><Boxes size={21} /></span><span>云裳仓库</span></div>
+        <div className="warehouse-chip"><span className="status-dot" />主仓在线</div>
+        <nav aria-label="主导航">
+          {visibleNav.map((item) => {
+            const active = item.to === "/" ? location.pathname === "/" : location.pathname.startsWith(item.to);
+            return <Link key={item.to} to={item.to} className={active ? "active" : ""} onClick={() => setMenuOpen(false)}><item.icon size={18} /><span>{item.label}</span></Link>;
+          })}
+        </nav>
+        <div className="sidebar-user">
+          <span className="avatar">{user.name.slice(0, 1)}</span>
+          <span><strong>{user.name}</strong><small>{user.role.name}</small></span>
+          <button className="icon-button" title="退出登录" onClick={() => logout.mutate()}><LogOut size={17} /></button>
+        </div>
+      </aside>
+      {menuOpen && <button className="sidebar-scrim" aria-label="关闭菜单" onClick={() => setMenuOpen(false)} />}
+      <section className="workspace">
+        <header className="topbar">
+          <button className="icon-button mobile-only" aria-label="打开菜单" onClick={() => setMenuOpen(true)}><Menu size={20} /></button>
+          <div className="breadcrumb">主仓 <span>/</span> {navItems.find((item) => item.to === "/" ? location.pathname === "/" : location.pathname.startsWith(item.to))?.label ?? "工作台"}</div>
+          <div className="topbar-actions">
+            <time>{new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "short" }).format(new Date())}</time>
+            <button className="icon-button notification-button" aria-label={`通知 ${unread} 条未读`} onClick={() => setNotificationsOpen((value) => !value)}><Bell size={19} />{unread > 0 && <b>{unread > 9 ? "9+" : unread}</b>}</button>
+          </div>
+        </header>
+        <main className="page-canvas">
+          <Routes>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/inventory" element={<InventoryPage />} />
+            <Route path="/catalog" element={<CatalogPage user={user} />} />
+            <Route path="/daily-outbound" element={<DailyOutboundPage canReverse={can(user, "inventory.adjust")} />} />
+            <Route path="/documents/new" element={<GoodsOrderEditorPage canUseAi={can(user, "imports.manage")} />} />
+            <Route path="/documents/:id/edit" element={<GoodsOrderEditorPage canUseAi={can(user, "imports.manage")} />} />
+            <Route path="/documents/:type" element={<DocumentsPage user={user} />} />
+            <Route path="/imports" element={<ImportsPage />} />
+            <Route path="/reports" element={<ReportsPage />} />
+            <Route path="/approvals" element={<ApprovalsPage />} />
+            <Route path="/audit" element={<AuditPage />} />
+            <Route path="/members" element={<MembersPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </main>
+      </section>
+      <nav className="mobile-nav" aria-label="移动端主导航">
+        {visibleNav.filter((item) => ["/", "/inventory", "/documents/INBOUND", "/daily-outbound", "/imports"].includes(item.to)).map((item) => {
+          const active = item.to === "/" ? location.pathname === "/" : location.pathname.startsWith(item.to);
+          return <Link key={item.to} to={item.to} className={active ? "active" : ""}><item.icon size={19} /><span>{item.label.replace("AI ", "")}</span></Link>;
+        })}
+      </nav>
+      {notificationsOpen && <NotificationDrawer items={notifications.data ?? []} onClose={() => setNotificationsOpen(false)} />}
+    </div>
+  );
+}
+
+function NotificationDrawer({ items, onClose }: { items: Notification[]; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const mark = useMutation({ mutationFn: (id: string) => api(`/notifications/${id}/read`, { method: "POST" }), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["notifications"] }) });
+  return (
+    <aside className="notification-drawer">
+      <div className="drawer-header"><div><p className="eyebrow">协作动态</p><h2>通知</h2></div><button className="icon-button" onClick={onClose}><X size={19} /></button></div>
+      <div className="notification-list">
+        {items.length === 0 ? <EmptyState icon={<Bell />} title="暂无通知" description="审批、AI任务和库存预警会出现在这里。" /> : items.map((item) => (
+          <button key={item.id} className={`notification-item ${item.readAt ? "read" : ""}`} onClick={() => !item.readAt && mark.mutate(item.id)}>
+            <span className="notification-dot" /><span><strong>{item.title}</strong><small>{item.message}</small><time>{formatDate(item.createdAt)}</time></span>
+          </button>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+function DashboardPage() {
+  const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: () => api<any>("/dashboard") });
+  const inventory = useQuery({ queryKey: ["inventory", ""], queryFn: () => api<InventoryRow[]>("/inventory/balances") });
+  if (dashboard.isLoading || inventory.isLoading) return <PageLoading />;
+  if (!dashboard.data) return <FatalState message={errorText(dashboard.error)} onRetry={() => dashboard.refetch()} />;
+  const metrics = dashboard.data.metrics;
+  return (
+    <>
+      <PageHeader eyebrow="今日仓况" title="库存总览" description={`${dashboard.data.warehouse.name}的实时可用量、预警和待处理事项。`} />
+      <section className="metric-strip">
+        <Metric label="可用库存" value={metrics.available.toLocaleString()} unit="件" tone="ink" />
+        <Metric label="在库总量" value={metrics.onHand.toLocaleString()} unit="件" />
+        <Metric label="已预留" value={metrics.reserved.toLocaleString()} unit="件" />
+        <Metric label="低库存 SKU" value={metrics.lowStock.toLocaleString()} unit="项" tone={metrics.lowStock ? "warn" : "ok"} />
+        <Metric label="待审批" value={metrics.pendingApprovals.toLocaleString()} unit="单" tone={metrics.pendingApprovals ? "danger" : "ok"} />
+      </section>
+      <section className="dashboard-grid">
+        <div className="section-block matrix-block">
+          <SectionHeading title="款色尺码矩阵" meta="可用库存" action={<Link className="text-link" to="/inventory">查看全部</Link>} />
+          <InventoryMatrix rows={inventory.data ?? []} />
+        </div>
+        <div className="section-block activity-block">
+          <SectionHeading title="最近单据" meta="按更新时间" />
+          <div className="activity-list">
+            {dashboard.data.recentDocuments.map((document: any) => (
+              <Link to={`/documents/${document.type}`} key={document.id} className="activity-row">
+                <span className={`document-icon ${document.type.toLowerCase()}`}>{document.type === "INBOUND" ? <ArrowDownToLine size={17} /> : document.type === "OUTBOUND" ? <ArrowUpFromLine size={17} /> : <ClipboardList size={17} />}</span>
+                <span><strong>{document.documentNo}</strong><small>{typeLabels[document.type]} · {document._count.lines} 行 · {document.createdBy.name}</small></span>
+                <StatusBadge status={document.status} />
+              </Link>
+            ))}
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function InventoryMatrix({ rows }: { rows: InventoryRow[] }) {
+  const firstStyleId = rows[0]?.style.id;
+  const selected = rows.filter((row) => row.style.id === firstStyleId);
+  if (!selected.length) return <EmptyState icon={<Boxes />} title="还没有库存" description="先创建商品并完成一张入库单。" />;
+  const colors = [...new Set(selected.map((row) => row.color))];
+  const sizes = [...new Set(selected.map((row) => row.size))];
+  const first = selected[0];
+  return (
+    <div className="matrix-wrap">
+      <div className="matrix-title"><span>{first.style.styleNo}</span><strong>{first.style.name}</strong></div>
+      <div className="stock-matrix" style={{ gridTemplateColumns: `minmax(92px, 1.2fr) repeat(${sizes.length}, minmax(58px, .7fr))` }}>
+        <span className="matrix-corner">颜色 / 尺码</span>
+        {sizes.map((size) => <span className="matrix-size" key={size}>{size}</span>)}
+        {colors.flatMap((color) => [
+          <span className="matrix-color" key={`${color}-label`}><i className={`swatch swatch-${colors.indexOf(color)}`} />{color}</span>,
+          ...sizes.map((size) => {
+            const item = selected.find((row) => row.color === color && row.size === size);
+            const value = item?.available ?? 0;
+            return <span key={`${color}-${size}`} className={`matrix-cell ${item?.lowStock ? "low" : value > 80 ? "full" : ""}`}><strong>{value}</strong><small>件</small></span>;
+          }),
+        ])}
+      </div>
+    </div>
+  );
+}
+
+function InventoryPage() {
+  const [search, setSearch] = useState("");
+  const [appliedSearch, setAppliedSearch] = useState("");
+  const [view, setView] = useState<"balance" | "ledger">("balance");
+  const inventory = useQuery({ queryKey: ["inventory", appliedSearch], queryFn: () => api<InventoryRow[]>(`/inventory/balances${appliedSearch ? `?search=${encodeURIComponent(appliedSearch)}` : ""}`) });
+  const ledger = useQuery({ queryKey: ["ledger"], queryFn: () => api<any[]>("/inventory/ledger"), enabled: view === "ledger" });
+  return (
+    <>
+      <PageHeader eyebrow="实时账本" title="库存" description="按款号、SKU、颜色和尺码查询主仓现存量。" />
+      <Toolbar>
+        <form className="search-box" onSubmit={(event) => { event.preventDefault(); setAppliedSearch(search); }}><Search size={17} /><input aria-label="搜索库存" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索款号、品名或 SKU" /><button className="icon-button" aria-label="搜索"><Search size={16} /></button></form>
+        <Segmented value={view} options={[{ value: "balance", label: "库存余额" }, { value: "ledger", label: "库存流水" }]} onChange={(value) => setView(value as typeof view)} />
+      </Toolbar>
+      {view === "balance" ? (
+        <DataTable loading={inventory.isLoading} empty={!(inventory.data?.length)} headers={["款式", "SKU", "颜色", "尺码", "状态构成", "在库", "预留", "可用", "预警"]}>
+          {inventory.data?.map((row) => <tr key={row.id}><td><strong>{row.style.styleNo}</strong><small>{row.style.name}</small></td><td className="mono">{row.skuCode}</td><td><span className="color-label"><i className={`swatch swatch-${colorSlot(row.color)}`} />{row.color}</span></td><td><strong>{row.size}</strong></td><td><div className="status-dots">{row.balances.map((balance) => <span key={balance.status} title={`${balance.status}: ${balance.onHand}`} className={`stock-state ${balance.status.toLowerCase()}`} />)}</div></td><td className="number">{row.onHand}</td><td className="number muted">{row.reserved}</td><td className="number strong">{row.available}</td><td>{row.lowStock ? <span className="alert-label"><AlertTriangle size={14} />低于 {row.minStock}</span> : <span className="ok-label"><Check size={14} />正常</span>}</td></tr>)}
+        </DataTable>
+      ) : (
+        <DataTable loading={ledger.isLoading} empty={!(ledger.data?.length)} headers={["时间", "单据", "款式 / SKU", "数量变化", "预留变化", "结存", "操作人"]}>
+          {ledger.data?.slice(0, 100).map((row) => <tr key={row.id}><td>{formatDate(row.createdAt)}</td><td><strong>{row.document.documentNo}</strong><small>{ledgerSource(row.document)}</small></td><td><strong>{row.sku.style.styleNo}</strong><small className="mono">{row.sku.skuCode}</small></td><td className={`number ${row.quantityDelta > 0 ? "positive" : row.quantityDelta < 0 ? "negative" : ""}`}>{signed(row.quantityDelta)}</td><td className="number">{signed(row.reservedDelta)}</td><td className="number strong">{row.balanceAfter}</td><td>{row.actor.name}</td></tr>)}
+        </DataTable>
+      )}
+    </>
+  );
+}
+
+function CatalogPage({ user }: { user: User }) {
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<Style | null>(null);
+  const styles = useQuery({ queryKey: ["styles"], queryFn: () => api<Style[]>("/catalog/styles") });
+  return (
+    <>
+      <PageHeader eyebrow="商品主数据" title="款式与 SKU" description="用颜色 × 尺码矩阵维护服装规格。" action={can(user, "catalog.manage") ? <button className="button primary" onClick={() => setCreateOpen(true)}><Plus size={17} />新建款式</button> : undefined} />
+      <div className="style-list">
+        {styles.isLoading ? <PageLoading /> : !styles.data?.length ? <EmptyState icon={<Shirt />} title="还没有款式" description="创建第一个款式并批量生成颜色尺码 SKU。" action={<button className="button primary" onClick={() => setCreateOpen(true)}><Plus size={17} />新建款式</button>} /> : styles.data.map((style) => <StyleRow key={style.id} style={style} onEdit={can(user, "catalog.manage") ? () => setEditing(style) : undefined} />)}
+      </div>
+      {createOpen && <CreateStyleModal onClose={() => setCreateOpen(false)} />}
+      {editing && <EditStyleModal style={editing} onClose={() => setEditing(null)} />}
+    </>
+  );
+}
+
+function StyleRow({ style, onEdit }: { style: Style; onEdit?: () => void }) {
+  const activeSkus = style.skus.filter((sku) => sku.active);
+  const colors = [...new Set(activeSkus.map((sku) => sku.color))];
+  const sizes = [...new Set(activeSkus.map((sku) => sku.size))];
+  return (
+    <article className="style-row">
+      <div className="style-summary"><span className="style-thumb"><Shirt size={24} /></span><div><span className="mono eyebrow">{style.styleNo}</span><h3>{style.name}</h3><p>{[style.brand, style.category, style.season, style.year].filter(Boolean).join(" · ") || "未填写扩展属性"}</p></div><div className="style-summary-actions"><strong className="sku-count">{activeSkus.length}<small>启用 SKU</small></strong>{onEdit && <button className="icon-button" title="编辑商品" onClick={onEdit}><Pencil size={15} /></button>}</div></div>
+      <div className="variant-preview"><span>颜色</span>{colors.map((color, index) => <b key={color}><i className={`swatch swatch-${index % 4}`} />{color}</b>)}<span>尺码</span>{sizes.map((size) => <b key={size}>{size}</b>)}</div>
+    </article>
+  );
+}
+
+type EditableVariant = { id?: string; skuCode: string; color: string; size: string; minStock: number; active: boolean };
+
+function EditStyleModal({ style, onClose }: { style: Style; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState(style.name);
+  const [brand, setBrand] = useState(style.brand ?? "");
+  const [category, setCategory] = useState(style.category ?? "");
+  const [variants, setVariants] = useState<EditableVariant[]>(style.skus.map((sku) => ({ ...sku })));
+  const update = useMutation({
+    mutationFn: () => api(`/catalog/styles/${style.id}`, {
+      method: "PUT",
+      body: jsonBody({
+        name,
+        brand: brand || null,
+        category: category || null,
+        activeSkuIds: variants.filter((variant) => variant.id && variant.active).map((variant) => variant.id),
+        variants: variants.map(({ id, skuCode, color, size, minStock }) => ({ id, skuCode, color, size, minStock })),
+      }),
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["styles"] });
+      queryClient.invalidateQueries({ queryKey: ["inventory"] });
+      emitToast("商品规格已更新");
+      onClose();
+    },
+  });
+  const patchVariant = (index: number, patch: Partial<EditableVariant>) => setVariants((current) => current.map((variant, itemIndex) => itemIndex === index ? { ...variant, ...patch } : variant));
+  const addVariant = () => setVariants((current) => [...current, { skuCode: `${style.styleNo}-${String(current.length + 1).padStart(2, "0")}`.toUpperCase(), color: "", size: "", minStock: 0, active: true }]);
+  return <Modal title={`维护商品 · ${style.styleNo}`} subtitle="有历史流水的规格会停用保留，不会删除记录" onClose={onClose} wide>
+    <form className="edit-style-form" onSubmit={(event) => { event.preventDefault(); update.mutate(); }}>
+      <div className="form-grid compact"><label>款式名称<input required value={name} onChange={(event) => setName(event.target.value)} /></label><label>品牌<input value={brand} onChange={(event) => setBrand(event.target.value)} /></label><label>品类<input value={category} onChange={(event) => setCategory(event.target.value)} /></label><label>款号<input value={style.styleNo} disabled /></label></div>
+      <div className="variant-editor">
+        <div className="variant-editor-head"><strong>颜色尺码规格</strong><button className="button small" type="button" onClick={addVariant}><Plus size={14} />添加规格</button></div>
+        <div className="variant-editor-columns"><span>启用</span><span>SKU 编码</span><span>颜色</span><span>尺码</span><span>预警线</span><span /></div>
+        {variants.map((variant, index) => <div className={`variant-editor-row ${variant.active ? "" : "inactive"}`} key={variant.id ?? `new-${index}`}>
+          <label className="toggle-cell"><input aria-label={`启用 ${variant.skuCode}`} type="checkbox" checked={variant.active} onChange={(event) => patchVariant(index, { active: event.target.checked })} /><span /></label>
+          <input aria-label={`第 ${index + 1} 行 SKU 编码`} required value={variant.skuCode} onChange={(event) => patchVariant(index, { skuCode: event.target.value })} />
+          <input aria-label={`第 ${index + 1} 行颜色`} required value={variant.color} onChange={(event) => patchVariant(index, { color: event.target.value })} />
+          <input aria-label={`第 ${index + 1} 行尺码`} required value={variant.size} onChange={(event) => patchVariant(index, { size: event.target.value })} />
+          <input aria-label={`第 ${index + 1} 行预警线`} type="number" min="0" value={variant.minStock} onChange={(event) => patchVariant(index, { minStock: Number(event.target.value) })} />
+          {!variant.id ? <button className="icon-button danger" type="button" aria-label={`删除第 ${index + 1} 行规格`} onClick={() => setVariants((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={15} /></button> : <span />}
+        </div>)}
+      </div>
+      {update.error && <ErrorBanner>{errorText(update.error)}</ErrorBanner>}
+      <ModalActions onClose={onClose} pending={update.isPending} submitLabel="保存商品" />
+    </form>
+  </Modal>;
+}
+
+function CreateStyleModal({ onClose }: { onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [styleNo, setStyleNo] = useState("");
+  const [name, setName] = useState("");
+  const [brand, setBrand] = useState("");
+  const [category, setCategory] = useState("");
+  const [colors, setColors] = useState("黑色,白色");
+  const [sizes, setSizes] = useState("S,M,L,XL");
+  const colorList = splitList(colors);
+  const sizeList = splitList(sizes);
+  const create = useMutation({
+    mutationFn: () => api("/catalog/styles", { method: "POST", body: jsonBody({ styleNo, name, brand: brand || null, category: category || null, attributes: {}, variants: colorList.flatMap((color, colorIndex) => sizeList.map((size) => ({ skuCode: `${styleNo}-${String(colorIndex + 1).padStart(2, "0")}-${size}`.toUpperCase(), color, size, minStock: 0 }))) }) }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["styles"] }); queryClient.invalidateQueries({ queryKey: ["inventory"] }); emitToast("款式及 SKU 已创建"); onClose(); },
+  });
+  return (
+    <Modal title="新建服装款式" subtitle="颜色和尺码将组合生成 SKU" onClose={onClose}>
+      <form className="form-grid" onSubmit={(event) => { event.preventDefault(); create.mutate(); }}>
+        <label>款号<input required value={styleNo} onChange={(event) => setStyleNo(event.target.value)} placeholder="例如 SS-2601" /></label>
+        <label>款式名称<input required value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 宽松落肩卫衣" /></label>
+        <label>品牌<input value={brand} onChange={(event) => setBrand(event.target.value)} /></label>
+        <label>品类<input value={category} onChange={(event) => setCategory(event.target.value)} /></label>
+        <label className="span-2">颜色（逗号分隔）<input required value={colors} onChange={(event) => setColors(event.target.value)} /></label>
+        <label className="span-2">尺码（逗号分隔）<input required value={sizes} onChange={(event) => setSizes(event.target.value)} /></label>
+        <div className="span-2 variant-count"><SlidersHorizontal size={16} /><span>将生成 <strong>{colorList.length * sizeList.length}</strong> 个 SKU</span><div>{colorList.map((color, index) => <span key={color}><i className={`swatch swatch-${index % 4}`} />{color}</span>)}</div></div>
+        {create.error && <ErrorBanner>{errorText(create.error)}</ErrorBanner>}
+        <ModalActions onClose={onClose} pending={create.isPending} submitLabel="创建款式" />
+      </form>
+    </Modal>
+  );
+}
+
+function DocumentsPage({ user }: { user: User }) {
+  const { type = "INBOUND" } = useParams();
+  const normalizedType = typeLabels[type] ? type : "INBOUND";
+  const [createOpen, setCreateOpen] = useState(false);
+  const [simpleImportOpen, setSimpleImportOpen] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const documents = useQuery({ queryKey: ["documents", normalizedType], queryFn: () => api<StockDocument[]>(`/documents?type=${normalizedType}`) });
+  const action = useMutation({
+    mutationFn: ({ document, name }: { document: StockDocument; name: string }) => api(`/documents/${document.id}/${name}`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: jsonBody({ version: document.version }) }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["documents"] }); queryClient.invalidateQueries({ queryKey: ["dashboard"] }); queryClient.invalidateQueries({ queryKey: ["inventory"] }); emitToast("单据状态已更新"); },
+    onError: (error) => emitToast(errorText(error), "error"),
+  });
+  return (
+    <>
+      <PageHeader eyebrow="库存单据" title={typeLabels[normalizedType]} description={documentDescription(normalizedType)} action={<div className="page-actions">{normalizedType === "INBOUND" && <button className="button" onClick={() => setSimpleImportOpen(true)}><Upload size={16} />导入并入库</button>}{(normalizedType === "INBOUND" || normalizedType === "OUTBOUND") ? <Link className="button primary" to={`/documents/new?type=${normalizedType}`}><Plus size={17} />新建{typeLabels[normalizedType]}单</Link> : <button className="button primary" onClick={() => setCreateOpen(true)}><Plus size={17} />新建{typeLabels[normalizedType]}单</button>}</div>} />
+      <div className="document-tabs">{Object.entries(typeLabels).map(([value, label]) => <Link key={value} className={value === normalizedType ? "active" : ""} to={`/documents/${value}`}>{label}</Link>)}</div>
+      <DataTable loading={documents.isLoading} empty={!(documents.data?.length)} headers={["单号", "来源 / 往来方", "行数 / 数量", "状态", "制单人", "时间", "操作"]}>
+        {documents.data?.map((document) => (
+          <DocumentRows key={document.id} document={document} expanded={expanded === document.id} onToggle={() => setExpanded(expanded === document.id ? null : document.id)} onAction={(name) => action.mutate({ document, name })} canReverse={can(user, "inventory.adjust")} />
+        ))}
+      </DataTable>
+      {createOpen && <CreateDocumentModal type={normalizedType} onClose={() => setCreateOpen(false)} />}
+      {simpleImportOpen && <SimpleImportDialog kind="INBOUND" onClose={() => setSimpleImportOpen(false)} onConfirmed={() => { queryClient.invalidateQueries({ queryKey: ["documents"] }); queryClient.invalidateQueries({ queryKey: ["inventory"] }); queryClient.invalidateQueries({ queryKey: ["dashboard"] }); }} />}
+    </>
+  );
+}
+
+function DocumentRows({ document, expanded, onToggle, onAction, canReverse }: { document: StockDocument; expanded: boolean; onToggle: () => void; onAction: (name: string) => void; canReverse: boolean }) {
+  const quantity = document.lines.reduce((sum, line) => sum + (document.type === "STOCKTAKE" ? Number(line.countedPieces ?? 0) : document.type === "ADJUSTMENT" ? Math.abs(Number(line.adjustmentDelta ?? 0)) : line.quantityPieces), 0);
+  return (
+    <>
+      <tr className="clickable-row" onClick={onToggle}><td><button className="row-disclosure" aria-label="展开单据"><ChevronDown className={expanded ? "rotated" : ""} size={16} /></button><strong className="mono">{document.documentNo}</strong></td><td>{document.sourceRef || document.counterparty || "-"}<small>{document.reason}</small></td><td><strong>{document.lines.length}</strong> 行 <span className="table-separator" /> <strong>{quantity}</strong> 件</td><td><StatusBadge status={document.status} /></td><td>{document.createdBy.name}</td><td>{formatDate(document.createdAt)}</td><td onClick={(event) => event.stopPropagation()}><div className="row-actions">{document.status === "DRAFT" && ["INBOUND", "OUTBOUND"].includes(document.type) ? <Link className="button small" to={`/documents/${document.id}/edit`}><Pencil size={14} />编辑</Link> : document.status === "DRAFT" ? <button className="button small" onClick={() => onAction("confirm")}><Check size={14} />确认</button> : null}{document.status === "CONFIRMED" && document.type === "OUTBOUND" && <button className="button small" onClick={() => onAction("reserve")}><Archive size={14} />预留</button>}{document.status === "CONFIRMED" && document.type !== "OUTBOUND" && <button className="button small primary" onClick={() => onAction("post")}><PackageCheck size={14} />过账</button>}{document.status === "RESERVED" && <button className="button small primary" onClick={() => onAction("post")}><PackageCheck size={14} />发货过账</button>}{document.status === "POSTED" && canReverse && <button className="icon-button danger" title="冲销" onClick={() => onAction("reverse")}><RotateCcw size={15} /></button>}</div></td></tr>
+      {expanded && <tr className="detail-row"><td colSpan={7}><div className="document-lines">{document.lines.map((line) => <div key={line.id}><span><strong>{line.sku.style.styleNo}</strong> · {line.sku.style.name}</span><span>{line.sku.color} / {line.sku.size}</span><span className="mono">{line.sku.skuCode}</span><strong>{document.type === "STOCKTAKE" ? `${line.countedPieces} 件实盘` : document.type === "ADJUSTMENT" ? signed(line.adjustmentDelta ?? 0) : `${line.quantityPieces} 件`}</strong></div>)}</div></td></tr>}
+    </>
+  );
+}
+
+type DraftLine = { skuId: string; stockStatus: string; cartons: number; piecesPerCarton: number; loosePieces: number; countedPieces?: number; adjustmentDelta?: number };
+
+function CreateDocumentModal({ type, onClose }: { type: string; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const inventory = useQuery({ queryKey: ["inventory", ""], queryFn: () => api<InventoryRow[]>("/inventory/balances") });
+  const [sourceRef, setSourceRef] = useState("");
+  const [counterparty, setCounterparty] = useState("");
+  const [reason, setReason] = useState("");
+  const [lines, setLines] = useState<DraftLine[]>([{ skuId: "", stockStatus: "SELLABLE", cartons: 0, piecesPerCarton: 0, loosePieces: type === "STOCKTAKE" || type === "ADJUSTMENT" ? 0 : 1, countedPieces: type === "STOCKTAKE" ? 0 : undefined, adjustmentDelta: type === "ADJUSTMENT" ? 1 : undefined }]);
+  const create = useMutation({
+    mutationFn: () => api("/documents", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: jsonBody({ type, sourceRef: sourceRef || null, counterparty: counterparty || null, reason: reason || null, lines }) }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["documents"] }); queryClient.invalidateQueries({ queryKey: ["dashboard"] }); emitToast(`${typeLabels[type]}单草稿已创建`); onClose(); },
+  });
+  const setLine = (index: number, patch: Partial<DraftLine>) => setLines((current) => current.map((line, itemIndex) => itemIndex === index ? { ...line, ...patch } : line));
+  return (
+    <Modal title={`新建${typeLabels[type]}单`} subtitle="保存后先生成草稿，不会立即改变库存" onClose={onClose} wide>
+      <form className="document-form" onSubmit={(event) => { event.preventDefault(); create.mutate(); }}>
+        <div className="form-grid compact">
+          <label>来源单号<input value={sourceRef} onChange={(event) => setSourceRef(event.target.value)} placeholder="可选" /></label>
+          <label>{type === "OUTBOUND" ? "客户 / 平台" : "供应商 / 往来方"}<input value={counterparty} onChange={(event) => setCounterparty(event.target.value)} placeholder="可选" /></label>
+          {(type === "ADJUSTMENT" || type === "STOCKTAKE") && <label className="span-2">原因<input required value={reason} onChange={(event) => setReason(event.target.value)} placeholder="库存差异原因必须留痕" /></label>}
+        </div>
+        <div className="line-editor">
+          <div className="line-editor-head"><strong>单据明细</strong><button type="button" className="button small" onClick={() => setLines((current) => [...current, { skuId: "", stockStatus: "SELLABLE", cartons: 0, piecesPerCarton: 0, loosePieces: type === "STOCKTAKE" || type === "ADJUSTMENT" ? 0 : 1, countedPieces: type === "STOCKTAKE" ? 0 : undefined, adjustmentDelta: type === "ADJUSTMENT" ? 1 : undefined }])}><Plus size={14} />添加一行</button></div>
+          {lines.map((line, index) => <div className="line-grid" key={index}><label className="sku-field">SKU<select required value={line.skuId} onChange={(event) => setLine(index, { skuId: event.target.value })}><option value="">选择款色尺码</option>{inventory.data?.map((sku) => <option key={sku.id} value={sku.id}>{sku.style.styleNo} · {sku.color}/{sku.size} · 可用 {sku.available}</option>)}</select></label><label>库存状态<select value={line.stockStatus} onChange={(event) => setLine(index, { stockStatus: event.target.value })}><option value="SELLABLE">可售</option><option value="INSPECTION">待检</option><option value="DAMAGED">残次</option></select></label>{type === "STOCKTAKE" ? <label>实盘件数<input type="number" min="0" value={line.countedPieces} onChange={(event) => setLine(index, { countedPieces: Number(event.target.value) })} /></label> : type === "ADJUSTMENT" ? <label>调整数量<input type="number" value={line.adjustmentDelta} onChange={(event) => setLine(index, { adjustmentDelta: Number(event.target.value) })} /></label> : <><label>箱数<input type="number" min="0" value={line.cartons} onChange={(event) => setLine(index, { cartons: Number(event.target.value) })} /></label><label>箱规<input type="number" min="0" value={line.piecesPerCarton} onChange={(event) => setLine(index, { piecesPerCarton: Number(event.target.value) })} /></label><label>散件<input type="number" min="0" value={line.loosePieces} onChange={(event) => setLine(index, { loosePieces: Number(event.target.value) })} /></label></>}<button type="button" className="icon-button danger line-remove" aria-label="删除明细" disabled={lines.length === 1} onClick={() => setLines((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={16} /></button></div>)}
+        </div>
+        {create.error && <ErrorBanner>{errorText(create.error)}</ErrorBanner>}
+        <ModalActions onClose={onClose} pending={create.isPending} submitLabel="保存草稿" />
+      </form>
+    </Modal>
+  );
+}
+
+function ImportsPage() {
+  const queryClient = useQueryClient();
+  const [file, setFile] = useState<File | null>(null);
+  const [kind, setKind] = useState("CATALOG");
+  const [sourceName, setSourceName] = useState("");
+  const [selectedJob, setSelectedJob] = useState<string | null>(null);
+  const [accepted, setAccepted] = useState<string[]>([]);
+  const jobs = useQuery({ queryKey: ["imports"], queryFn: () => api<ImportJob[]>("/imports"), refetchInterval: (query) => query.state.data?.some((job) => ["QUEUED", "PROCESSING"].includes(job.status)) ? 2000 : false });
+  const detail = useQuery({ queryKey: ["import", selectedJob], queryFn: () => api<ImportJob>(`/imports/${selectedJob}`), enabled: Boolean(selectedJob), refetchInterval: (query) => ["QUEUED", "PROCESSING"].includes(query.state.data?.status ?? "") ? 2000 : false });
+  const upload = useMutation({
+    mutationFn: () => { const body = new FormData(); body.set("file", file!); body.set("kind", kind); if (sourceName) body.set("sourceName", sourceName); return api<{ job_id: string }>("/imports", { method: "POST", body }); },
+    onSuccess: (result) => { setSelectedJob(result.job_id); setFile(null); queryClient.invalidateQueries({ queryKey: ["imports"] }); emitToast("文件已进入安全解析队列"); },
+  });
+  const confirm = useMutation({ mutationFn: () => api(`/imports/${selectedJob}/confirm`, { method: "POST", body: jsonBody({ acceptedRowIds: accepted }) }), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["imports"] }); queryClient.invalidateQueries({ queryKey: ["styles"] }); queryClient.invalidateQueries({ queryKey: ["documents"] }); emitToast("已生成系统草稿，库存尚未改变"); setSelectedJob(null); }, onError: (error) => emitToast(errorText(error), "error") });
+  const validRows = detail.data?.rows?.filter((row) => row.validationErrors.length === 0) ?? [];
+  return (
+    <>
+      <PageHeader eyebrow="可信 AI 流程" title="AI 导入" description="AI 只识别和映射，人工确认后生成草稿，过账前库存始终不变。" />
+      <section className="import-layout">
+        <form className="upload-panel" onSubmit={(event) => { event.preventDefault(); if (file) upload.mutate(); }}>
+          <div className="upload-icon"><Upload size={24} /></div><div><h2>上传业务文件</h2><p>Excel / CSV 最多 50,000 行；PDF 最多 25 页；单文件不超过 50MB。</p></div>
+          <div className="upload-fields"><label>导入内容<select value={kind} onChange={(event) => setKind(event.target.value)}><option value="CATALOG">商品资料</option><option value="INBOUND">入库单</option><option value="OUTBOUND">出库订单</option><option value="STOCKTAKE">盘点单</option></select></label><label>来源模板名<input value={sourceName} onChange={(event) => setSourceName(event.target.value)} placeholder="例如：某供应商月表" /></label></div>
+          <label className={`file-drop ${file ? "has-file" : ""}`}><input type="file" accept=".xlsx,.xls,.csv,.pdf,.jpg,.jpeg,.png,.webp" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><FileSpreadsheet size={20} /><span>{file ? file.name : "选择文件或拖放到这里"}</span><small>{file ? formatBytes(file.size) : "外部内容将被作为不可信数据隔离处理"}</small></label>
+          {upload.error && <ErrorBanner>{errorText(upload.error)}</ErrorBanner>}
+          <button className="button primary" disabled={!file || upload.isPending}><Sparkles size={17} />{upload.isPending ? "正在上传" : "开始 AI 解析"}</button>
+        </form>
+        <div className="import-history"><SectionHeading title="导入任务" meta={`${jobs.data?.length ?? 0} 条`} />{!jobs.data?.length ? <EmptyState icon={<FileClock />} title="暂无导入任务" description="上传文件后，解析进度会显示在这里。" /> : jobs.data.map((job) => <button key={job.id} className={`job-row ${selectedJob === job.id ? "active" : ""}`} onClick={() => { setSelectedJob(job.id); setAccepted([]); }}><span className="job-file"><FileSpreadsheet size={17} /></span><span><strong>{job.fileName}</strong><small>{typeLabels[job.kind] ?? "商品资料"} · {formatDate(job.createdAt)}</small></span><StatusBadge status={job.status} /></button>)}</div>
+      </section>
+      {selectedJob && <Modal title="导入结果确认" subtitle={detail.data?.fileName ?? "正在读取任务"} onClose={() => setSelectedJob(null)} wide>
+        {detail.isLoading ? <PageLoading /> : detail.data?.status !== "REVIEW" ? <div className="job-progress"><RefreshCw className={detail.data?.status === "PROCESSING" ? "spin" : ""} /><strong>{statusLabels[detail.data?.status ?? ""] ?? detail.data?.status}</strong><progress value={detail.data?.progress ?? 0} max="100" /><p>{detail.data?.error}</p></div> : <><div className="review-toolbar"><label><input type="checkbox" checked={validRows.length > 0 && accepted.length === validRows.length} onChange={(event) => setAccepted(event.target.checked ? validRows.map((row) => row.id) : [])} />选择全部有效行</label><span>{accepted.length} / {validRows.length} 行待确认</span></div><div className="review-table"><table><thead><tr><th>选择</th><th>行</th><th>SKU</th><th>款号 / 颜色 / 尺码</th><th>数量</th><th>置信度</th><th>校验</th></tr></thead><tbody>{detail.data.rows?.map((row) => <tr key={row.id} className={row.validationErrors.length ? "invalid" : ""}><td><input type="checkbox" disabled={row.validationErrors.length > 0} checked={accepted.includes(row.id)} onChange={(event) => setAccepted((current) => event.target.checked ? [...current, row.id] : current.filter((id) => id !== row.id))} /></td><td>{row.rowNumber}</td><td className="mono">{String(row.normalized.skuCode ?? "-")}</td><td>{[row.normalized.styleNo, row.normalized.color, row.normalized.size].filter(Boolean).map(String).join(" / ") || "-"}</td><td>{String(row.normalized.quantity ?? row.normalized.countedPieces ?? "-")}</td><td><Confidence value={row.confidence} /></td><td>{row.validationErrors.length ? <span className="alert-label"><AlertTriangle size={13} />{row.validationErrors.join("；")}</span> : <span className="ok-label"><Check size={13} />通过</span>}</td></tr>)}</tbody></table></div><div className="modal-actions"><button className="button" onClick={() => setSelectedJob(null)}>稍后处理</button><button className="button primary" disabled={!accepted.length || confirm.isPending} onClick={() => confirm.mutate()}><Check size={16} />确认并生成草稿</button></div></>}
+      </Modal>}
+    </>
+  );
+}
+
+function ReportsPage() {
+  const queryClient = useQueryClient();
+  const [prompt, setPrompt] = useState("导出当前全部可用库存，按款号和颜色查看");
+  const [format, setFormat] = useState("xlsx");
+  const jobs = useQuery({ queryKey: ["exports"], queryFn: () => api<ExportJob[]>("/exports"), refetchInterval: (query) => query.state.data?.some((job) => ["QUEUED", "PROCESSING"].includes(job.status)) ? 2000 : false });
+  const create = useMutation({ mutationFn: () => api<{ job_id: string }>("/exports", { method: "POST", body: jsonBody({ prompt, format }) }), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["exports"] }); emitToast("报表已进入生成队列"); } });
+  return (
+    <>
+      <PageHeader eyebrow="受限报表引擎" title="AI 导出" description="用自然语言描述口径，系统只会查询允许的数据集与字段。" />
+      <section className="report-composer"><div className="report-prompt"><Sparkles size={20} /><textarea aria-label="报表需求" value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={3} /><div className="prompt-actions"><Segmented value={format} options={[{ value: "xlsx", label: "Excel" }, { value: "csv", label: "CSV" }, { value: "pdf", label: "PDF" }]} onChange={setFormat} /><button className="button primary" onClick={() => create.mutate()} disabled={create.isPending || prompt.length < 2}><Download size={16} />生成报表</button></div></div><div className="report-guard"><ShieldCheck size={23} /><div><strong>查询边界已锁定</strong><p>AI 不能执行 SQL，也不能访问库存、流水、单据、预警和审计以外的数据。</p></div></div></section>
+      {create.error && <ErrorBanner>{errorText(create.error)}</ErrorBanner>}
+      <div className="section-block"><SectionHeading title="导出记录" meta="文件保留 7 天" /><DataTable loading={jobs.isLoading} empty={!(jobs.data?.length)} headers={["需求", "格式", "状态", "进度", "生成时间", "操作"]}>{jobs.data?.map((job) => <tr key={job.id}><td><strong>{job.prompt}</strong><small>{job.error}</small></td><td className="mono">{job.format.toUpperCase()}</td><td><StatusBadge status={job.status} /></td><td><progress value={job.progress} max="100" /></td><td>{formatDate(job.createdAt)}</td><td>{job.status === "COMPLETED" && <button className="button small" onClick={() => downloadExport(job.id)}><Download size={14} />下载</button>}</td></tr>)}</DataTable></div>
+    </>
+  );
+}
+
+function ApprovalsPage() {
+  const queryClient = useQueryClient();
+  const approvals = useQuery({ queryKey: ["approvals"], queryFn: () => api<Approval[]>("/approvals") });
+  const decide = useMutation({ mutationFn: ({ id, approved }: { id: string; approved: boolean }) => api(`/approvals/${id}/${approved ? "approve" : "reject"}`, { method: "POST", body: jsonBody({}) }), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["approvals"] }); queryClient.invalidateQueries({ queryKey: ["documents"] }); queryClient.invalidateQueries({ queryKey: ["dashboard"] }); emitToast("审批决定已记录"); }, onError: (error) => emitToast(errorText(error), "error") });
+  return (
+    <><PageHeader eyebrow="双人复核" title="审批中心" description="盘点差异和库存调整必须由制单人之外的主管确认。" /><div className="approval-list">{approvals.isLoading ? <PageLoading /> : !approvals.data?.length ? <EmptyState icon={<ShieldCheck />} title="暂无审批记录" description="高风险单据提交后会出现在这里。" /> : approvals.data.map((approval) => <article className="approval-row" key={approval.id}><span className={`approval-symbol ${approval.status.toLowerCase()}`}><ShieldCheck size={20} /></span><div><span className="eyebrow">{typeLabels[approval.document.type]} · {approval.document.documentNo}</span><h3>{approval.document.reason || "库存差异复核"}</h3><p>{approval.document.lines.length} 行明细 · 制单人 {approval.document.createdBy.name} · {formatDate(approval.createdAt)}</p></div><StatusBadge status={approval.status} />{approval.status === "PENDING" && <div className="approval-actions"><button className="button small danger-text" onClick={() => decide.mutate({ id: approval.id, approved: false })}><X size={14} />驳回</button><button className="button small primary" onClick={() => decide.mutate({ id: approval.id, approved: true })}><Check size={14} />通过</button></div>}</article>)}</div></>
+  );
+}
+
+function AuditPage() {
+  const events = useQuery({ queryKey: ["audit"], queryFn: () => api<AuditEvent[]>("/audit") });
+  return <><PageHeader eyebrow="不可变记录" title="审计日志" description="关键业务操作的人员、对象、时间与来源地址。" /><DataTable loading={events.isLoading} empty={!(events.data?.length)} headers={["时间", "操作", "对象", "对象 ID", "操作人", "来源 IP"]}>{events.data?.map((event) => <tr key={event.id}><td>{formatDate(event.createdAt)}</td><td><span className="audit-action">{auditLabel(event.action)}</span></td><td>{event.entityType}</td><td className="mono truncate">{event.entityId}</td><td><strong>{event.actor.name}</strong><small>{event.actor.email}</small></td><td className="mono">{event.ip || "-"}</td></tr>)}</DataTable></>;
+}
+
+function MembersPage() {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const members = useQuery({ queryKey: ["members"], queryFn: () => api<any[]>("/members") });
+  const roles = useQuery({ queryKey: ["roles"], queryFn: () => api<Role[]>("/roles") });
+  return <><PageHeader eyebrow="最小权限" title="成员与角色" description="每位成员使用独立账号，权限和操作记录相互隔离。" action={<button className="button primary" onClick={() => setOpen(true)}><UserPlus size={17} />添加成员</button>} /><DataTable loading={members.isLoading} empty={!(members.data?.length)} headers={["成员", "邮箱", "角色", "权限数", "状态", "加入时间"]}>{members.data?.map((member) => <tr key={member.id}><td><span className="member-cell"><span className="avatar">{member.name.slice(0, 1)}</span><strong>{member.name}</strong></span></td><td>{member.email}</td><td><StatusBadge status={member.role.code} label={member.role.name} /></td><td>{member.role.permissions.includes("*") ? "全部" : member.role.permissions.length}</td><td><span className="ok-label"><Check size={13} />启用</span></td><td>{formatDate(member.createdAt)}</td></tr>)}</DataTable>{open && <CreateMemberModal roles={roles.data ?? []} onClose={() => setOpen(false)} onCreated={() => queryClient.invalidateQueries({ queryKey: ["members"] })} />}</>;
+}
+
+function CreateMemberModal({ roles, onClose, onCreated }: { roles: Role[]; onClose: () => void; onCreated: () => void }) {
+  const [name, setName] = useState(""); const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [roleId, setRoleId] = useState(roles.find((role) => role.code === "OPERATOR")?.id ?? roles[0]?.id ?? "");
+  const create = useMutation({ mutationFn: () => api("/members", { method: "POST", body: jsonBody({ name, email, password, roleId }) }), onSuccess: () => { onCreated(); emitToast("成员账号已创建"); onClose(); } });
+  return <Modal title="添加仓库成员" subtitle="初始密码仅在当前表单中输入，不会被系统明文保存" onClose={onClose}><form className="form-grid" onSubmit={(event) => { event.preventDefault(); create.mutate(); }}><label>姓名<input required value={name} onChange={(event) => setName(event.target.value)} /></label><label>邮箱<input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label><label>初始密码<input required minLength={10} type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label><label>角色<select value={roleId} onChange={(event) => setRoleId(event.target.value)}>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>{create.error && <ErrorBanner>{errorText(create.error)}</ErrorBanner>}<ModalActions onClose={onClose} pending={create.isPending} submitLabel="创建账号" /></form></Modal>;
+}
+
+function SettingsPage() {
+  const queryClient = useQueryClient();
+  const settings = useQuery({ queryKey: ["warehouse-automation"], queryFn: () => api<AutomationSettings>("/settings/warehouse-automation") });
+  const [time, setTime] = useState("20:00");
+  useEffect(() => setTime(settings.data?.pendingTime ?? settings.data?.currentTime ?? "20:00"), [settings.data?.currentTime, settings.data?.pendingTime]);
+  const save = useMutation({
+    mutationFn: () => api<AutomationSettings>("/settings/warehouse-automation", { method: "PUT", body: jsonBody({ autoOutboundTime: time }) }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["warehouse-automation"] }); emitToast("自动出库时间已保存，将从次日生效"); },
+  });
+  return <>
+    <PageHeader eyebrow="仓库自动化" title="系统设置" description="自动出库时间由管理员维护，修改从次日开始生效。" />
+    <section className="automation-setting-band">
+      <div className="automation-time-display"><Clock3 size={24} /><span>当前每日结算</span><strong>{settings.data?.currentTime ?? "--:--"}</strong><small>{settings.data?.timezone ?? "Asia/Shanghai"}</small></div>
+      <form onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
+        <label>新的自动出库时间<input aria-label="新的自动出库时间" type="time" required value={time} onChange={(event) => setTime(event.target.value)} /></label>
+        <button className="button primary" disabled={settings.isLoading || save.isPending}>保存时间</button>
+      </form>
+      <div className="automation-effective"><span>生效规则</span><strong>{settings.data?.pendingTime ? `${settings.data.effectiveFrom} 起改为 ${settings.data.pendingTime}` : "修改后次日生效"}</strong><small>今天已经建立的登记批次不会临时改变时间。</small></div>
+    </section>
+    {(settings.error || save.error) && <ErrorBanner>{errorText(settings.error ?? save.error)}</ErrorBanner>}
+    <div className="settings-bands"><section><div><h2>仓库范围</h2><p>当前启用一个主仓，库存记录已保留仓库标识，未开放跨仓调拨。</p></div><StatusBadge status="ACTIVE" label="主仓启用" /></section><section><div><h2>AI 供应商</h2><p>通过部署环境配置兼容服务、模型和密钥；页面不会读取或显示密钥。</p></div><span className="config-chip">环境变量管理</span></section><section><div><h2>移动端能力</h2><p>支持响应式操作与 OCR 拍照上传；首版不提供条码、标签打印和离线写入。</p></div><span className="config-chip">PWA 已启用</span></section><section><div><h2>文件保留</h2><p>导入源文件默认保留 30 天，导出文件默认保留 7 天。</p></div><span className="config-chip">自动清理策略</span></section></div>
+  </>;
+}
+
+function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: ReactNode }) {
+  return <header className="page-header"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p>{description}</p></div>{action && <div className="page-actions">{action}</div>}</header>;
+}
+
+function SectionHeading({ title, meta, action }: { title: string; meta?: string; action?: ReactNode }) {
+  return <div className="section-heading"><div><h2>{title}</h2>{meta && <span>{meta}</span>}</div>{action}</div>;
+}
+
+function Metric({ label, value, unit, tone = "neutral" }: { label: string; value: string; unit: string; tone?: string }) {
+  return <article className={`metric ${tone}`}><span>{label}</span><div><strong>{value}</strong><small>{unit}</small></div></article>;
+}
+
+function Toolbar({ children }: { children: ReactNode }) { return <div className="toolbar">{children}</div>; }
+
+function Segmented({ value, options, onChange }: { value: string; options: Array<{ value: string; label: string }>; onChange: (value: string) => void }) {
+  return <div className="segmented">{options.map((option) => <button type="button" className={value === option.value ? "active" : ""} key={option.value} onClick={() => onChange(option.value)}>{option.label}</button>)}</div>;
+}
+
+function DataTable({ headers, children, loading, empty }: { headers: string[]; children?: ReactNode; loading?: boolean; empty?: boolean }) {
+  if (loading) return <PageLoading />;
+  if (empty) return <EmptyState icon={<ClipboardList />} title="暂无数据" description="完成第一笔业务后，记录会显示在这里。" />;
+  return <div className="table-wrap"><table><thead><tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{children}</tbody></table></div>;
+}
+
+function StatusBadge({ status, label }: { status: string; label?: string }) {
+  return <span className={`status-badge ${status.toLowerCase()}`}>{label ?? statusLabels[status] ?? status}</span>;
+}
+
+function Confidence({ value }: { value: number }) {
+  const tone = value >= 0.9 ? "high" : value >= 0.7 ? "medium" : "low";
+  return <span className={`confidence ${tone}`}><i style={{ width: `${Math.round(value * 100)}%` }} />{Math.round(value * 100)}%</span>;
+}
+
+function EmptyState({ icon, title, description, action }: { icon: ReactNode; title: string; description: string; action?: ReactNode }) {
+  return <div className="empty-state"><span>{icon}</span><h3>{title}</h3><p>{description}</p>{action}</div>;
+}
+
+function ErrorBanner({ children }: { children: ReactNode }) { return <div className="error-banner"><AlertTriangle size={16} />{children}</div>; }
+
+function PageLoading() { return <div className="page-loading"><span /><span /><span /></div>; }
+
+function FatalState({ message, onRetry }: { message: string; onRetry: () => void }) { return <div className="fatal-state"><AlertTriangle size={28} /><h2>无法读取数据</h2><p>{message}</p><button className="button" onClick={onRetry}><RefreshCw size={16} />重试</button></div>; }
+
+function Modal({ title, subtitle, onClose, wide, children }: { title: string; subtitle?: string; onClose: () => void; wide?: boolean; children: ReactNode }) {
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className={`modal ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="modal-title"><header><div><p className="eyebrow">仓库操作</p><h2 id="modal-title">{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-button" aria-label="关闭" onClick={onClose}><X size={19} /></button></header><div className="modal-body">{children}</div></section></div>;
+}
+
+function ModalActions({ onClose, pending, submitLabel }: { onClose: () => void; pending: boolean; submitLabel: string }) { return <div className="modal-actions span-2"><button type="button" className="button" onClick={onClose}>取消</button><button type="submit" className="button primary" disabled={pending}>{pending ? "正在保存" : submitLabel}</button></div>; }
+
+function ToastHost({ children }: { children: ReactNode }) {
+  const [toast, setToast] = useState<{ message: string; tone: string } | null>(null);
+  useEffect(() => {
+    const handler = (event: Event) => { const detail = (event as CustomEvent).detail; setToast(detail); window.setTimeout(() => setToast(null), 3200); };
+    window.addEventListener("cangku:toast", handler);
+    return () => window.removeEventListener("cangku:toast", handler);
+  }, []);
+  return <>{children}{toast && <div className={`toast ${toast.tone}`}><span>{toast.tone === "success" ? <Check size={16} /> : <AlertTriangle size={16} />}</span>{toast.message}</div>}</>;
+}
+
+function documentDescription(type: string) {
+  return { INBOUND: "供应商来货确认后增加库存。", OUTBOUND: "订单先预留可用库存，发货过账后正式扣减。", RETURN: "退回商品经质检后进入指定库存状态。", STOCKTAKE: "按库存快照记录实盘数，差异需另一名主管审批。", ADJUSTMENT: "报损、报溢和纠错必须填写原因并经过审批。" }[type] ?? "库存业务单据";
+}
+
+function formatDate(value: string) { return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
+function formatBytes(bytes: number) { return bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
+function auditLabel(action: string) { return ({ "style.created": "创建款式", "style.updated": "更新商品", "document.created": "创建单据", "document.confirmed": "确认单据", "document.reserved": "预留库存", "document.posted": "单据过账", "document.reversed": "冲销单据", "daily_outbound.auto_posted": "每日自动出库", "daily_outbound.supplement_posted": "补充出库", "simple_import.inbound_posted": "模板入库", "simple_import.outbound_confirmed": "导入出库登记", "automation.outbound_time.updated": "修改自动出库时间", "approval.approved": "审批通过", "approval.rejected": "审批驳回", "member.created": "创建成员" } as Record<string, string>)[action] ?? action; }
+function ledgerSource(document: { documentNo: string; type: string; reason?: string | null; sourceRef?: string | null }) {
+  if (document.documentNo.startsWith("CX-")) return "批次回退";
+  if (document.reason === "每日登记自动结算") return "每日自动出库";
+  if (document.reason === "结算时间后补充出库") return "补充出库";
+  if (document.reason === "固定模板确认入库") return "模板入库";
+  return document.sourceRef || typeLabels[document.type] || document.type;
+}

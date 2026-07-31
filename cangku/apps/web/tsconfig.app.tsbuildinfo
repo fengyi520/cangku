@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/dailyoutboundpage.tsx","./src/goodsordereditorpage.tsx","./src/simpleimportdialog.tsx","./src/api.ts","./src/domain.test.ts","./src/domain.ts","./src/goods-order-domain.test.ts","./src/goods-order-domain.ts","./src/main.tsx","./src/types.ts","./src/vite-env.d.ts"],"version":"5.9.3"}

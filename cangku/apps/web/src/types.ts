@@ -1,0 +1,111 @@
+export type Role = { id: string; code: string; name: string; permissions: string[] };
+export type User = { id: string; organizationId: string; email: string; name: string; role: Role };
+export type Style = {
+  id: string;
+  styleNo: string;
+  name: string;
+  brand?: string | null;
+  category?: string | null;
+  season?: string | null;
+  year?: number | null;
+  skus: Sku[];
+};
+export type Sku = { id: string; skuCode: string; color: string; size: string; minStock: number; active: boolean };
+export type InventoryRow = Sku & {
+  style: Omit<Style, "skus">;
+  onHand: number;
+  reserved: number;
+  available: number;
+  lowStock: boolean;
+  balances: Array<{ status: string; onHand: number; reserved: number }>;
+};
+export type Warehouse = { id: string; code: string; name: string; active: boolean };
+export type DocumentLine = {
+  id: string;
+  skuId: string;
+  stockStatus: string;
+  quantityPieces: number;
+  countedPieces?: number | null;
+  adjustmentDelta?: number | null;
+  sku: Sku & { style: Omit<Style, "skus"> };
+};
+export type StockDocument = {
+  id: string;
+  documentNo: string;
+  type: string;
+  status: string;
+  warehouseId: string;
+  version: number;
+  sourceRef?: string | null;
+  counterparty?: string | null;
+  reason?: string | null;
+  createdAt: string;
+  postedAt?: string | null;
+  createdBy: { id: string; name: string };
+  postedBy?: { id: string; name: string } | null;
+  lines: DocumentLine[];
+  approvals: Array<{ id: string; status: string }>;
+};
+export type ImportJob = { id: string; kind: string; status: string; fileName: string; progress: number; error?: string | null; createdAt: string; appliedDocumentId?: string | null; appliedAt?: string | null; _count?: { rows: number }; rows?: ImportRow[] };
+export type ImportRow = { id: string; rowNumber: number; raw: Record<string, unknown>; normalized: Record<string, unknown>; confidence: number; validationErrors: string[]; accepted: boolean; skuId?: string | null; sku?: InventoryRow };
+export type ExportJob = { id: string; status: string; prompt: string; format: string; progress: number; error?: string | null; createdAt: string };
+export type Approval = { id: string; status: string; comment?: string | null; createdAt: string; actor?: { name: string }; document: StockDocument };
+export type AuditEvent = { id: string; action: string; entityType: string; entityId: string; createdAt: string; ip?: string | null; actor: { name: string; email: string } };
+export type Notification = { id: string; type: string; title: string; message: string; readAt?: string | null; createdAt: string };
+export type SimpleImportPreview = {
+  id: string;
+  kind: "INBOUND" | "OUTBOUND";
+  fileName: string;
+  status: string;
+  valid: boolean;
+  rows: Array<{
+    sourceRows: number[];
+    styleNo: string;
+    color: string;
+    size: string;
+    quantity: number;
+    note?: string | null;
+    skuId?: string | null;
+    skuCode?: string | null;
+    error?: string | null;
+  }>;
+};
+export type DailyOutboundLine = {
+  id: string;
+  skuId: string;
+  quantity: number;
+  note?: string | null;
+  sku: Sku & { style: Omit<Style, "skus"> };
+};
+export type DailyOutboundBatch = {
+  id: string;
+  businessDate: string;
+  kind: "AUTOMATIC" | "SUPPLEMENT";
+  sequence: number;
+  status: "OPEN" | "PROCESSING" | "POSTED" | "FAILED" | "REVERSED";
+  scheduledAt: string;
+  version: number;
+  error?: string | null;
+  postedAt?: string | null;
+  reversedAt?: string | null;
+  lines: DailyOutboundLine[];
+  document?: { id: string; documentNo: string; status: string; version: number; postedAt?: string | null } | null;
+  reversalDocument?: { id: string; documentNo: string; postedAt?: string | null } | null;
+  createdBy: { id: string; name: string };
+  updatedBy: { id: string; name: string };
+};
+export type DailyOutboundDay = {
+  businessDate: string;
+  autoOutboundTime: string;
+  timezone: string;
+  scheduledAt: string;
+  beforeCutoff: boolean;
+  automaticBatch?: DailyOutboundBatch | null;
+  supplements: DailyOutboundBatch[];
+};
+export type AutomationSettings = {
+  currentTime: string;
+  pendingTime?: string | null;
+  effectiveFrom?: string | null;
+  timezone: string;
+};

@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+!.env.example
+!.env.production.example
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+storage
+backups
+test-results
+playwright-report
+*.log

@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.*
+!.env.example
+!.env.production.example
+coverage/
+playwright-report/
+test-results/
+storage/
+backups/
+*.log
+.DS_Store
+.vite/
+.auth/
+apps/api/prisma/*.db
