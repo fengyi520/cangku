@@ -11,6 +11,7 @@ test-results/
 storage/
 backups/
 *.log
+.ocr-e2e-*
 .DS_Store
 .vite/
 .auth/
