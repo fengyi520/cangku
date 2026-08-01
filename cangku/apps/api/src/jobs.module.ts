@@ -194,16 +194,45 @@ class AiAdapter {
       "For example, preserve a header row like [\"商品原文\",\"5XL\",\"6XL\",\"7XL\",\"8XL\"] as five separate cells without changing their text.",
       "Otherwise return {rows:[{normalized:{styleNo,name,skuCode,color,size,quantity,cartons,piecesPerCarton,countedPieces,sourceRef,counterparty,note},confidence:0..1,validationErrors:[]}]}. Omit missing fields.",
     ].join("\n");
-    const fileContent = contentType === "input_file" ? { type: contentType, filename: "upload.pdf", file_data: dataUrl } : { type: contentType, image_url: dataUrl };
-    const response = await fetch(`${config.baseUrl}/responses`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: config.model, input: [{ role: "user", content: [{ type: "input_text", text: instruction }, fileContent] }] }),
-      signal: AbortSignal.timeout(configuredPositiveNumber("AI_OCR_TIMEOUT_MS", DEFAULT_OCR_TIMEOUT_MS)),
-    });
-    if (!response.ok) throw new Error(`AI OCR failed: ${response.status}`);
-    const payload = (await response.json()) as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> };
-    const text = payload.output_text ?? payload.output?.flatMap((item) => item.content ?? []).map((item) => item.text ?? "").join("") ?? "{}";
+    const timeoutMs = configuredPositiveNumber("AI_OCR_TIMEOUT_MS", DEFAULT_OCR_TIMEOUT_MS);
+    let text = "";
+    let responsesError = "";
+    try {
+      const fileContent = contentType === "input_file" ? { type: contentType, filename: "upload.pdf", file_data: dataUrl } : { type: contentType, image_url: dataUrl };
+      const response = await fetch(`${config.baseUrl}/responses`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: config.model, input: [{ role: "user", content: [{ type: "input_text", text: instruction }, fileContent] }] }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!response.ok) {
+        responsesError = `responses HTTP ${response.status}`;
+      } else {
+        const payload = (await response.json()) as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> };
+        text = payload.output_text ?? payload.output?.flatMap((item) => item.content ?? []).map((item) => item.text ?? "").join("") ?? "";
+      }
+    } catch (error) {
+      responsesError = `responses ${error instanceof Error ? error.name : "request failed"}`;
+    }
+
+    if (!text && contentType === "input_image") {
+      const response = await fetch(`${config.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: config.model,
+          temperature: 0,
+          response_format: { type: "json_object" },
+          messages: [{ role: "user", content: [{ type: "text", text: instruction }, { type: "image_url", image_url: { url: dataUrl, detail: "high" } }] }],
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!response.ok) throw new Error(`AI OCR failed: ${responsesError || "responses empty"}; chat/completions HTTP ${response.status}`);
+      const payload = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      text = payload.choices?.[0]?.message?.content ?? "";
+    }
+
+    if (!text) throw new Error(`AI OCR failed: ${responsesError || "empty response"}`);
     const parsed = JSON.parse(text.replace(/^```json\s*|\s*```$/g, ""));
     return parseVisionPayload(parsed);
   }

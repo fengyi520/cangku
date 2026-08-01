@@ -27,4 +27,13 @@ describe("vision document parser", () => {
     const rows = parseVisionPayload({ rows: [{ normalized: { styleNo: "A1", color: "黑", size: "M", quantity: 2 }, confidence: 0.8, validationErrors: [] }] });
     expect(rows).toEqual([expect.objectContaining({ normalized: { styleNo: "A1", color: "黑", size: "M", quantity: 2 }, confidence: 0.8 })]);
   });
+
+  it("accepts common table and headers/data response shapes", () => {
+    const rows = parseVisionPayload({
+      headers: ["德绒男士内衣", "5XL", "6XL"],
+      data: [["黑色中领02号", "377", "141"]],
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[1]?.normalized).toEqual({ styleNo: "德绒男士内衣", color: "黑色中领02号", size: "6XL", quantity: 141 });
+  });
 });
