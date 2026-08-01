@@ -18,8 +18,23 @@ describe("simple import parser", () => {
     expect(row.inputError).toBe("数量必须为正整数");
   });
 
-  it("rejects files that do not use the required template columns", () => {
-    expect(() => parseSimpleImportMatrix([["商品", "数量"], ["CY-1", 3]])).toThrow("模板必须包含");
+  it("recognizes style matrix files with color codes as rows and sizes as columns", () => {
+    const rows = parseSimpleImportMatrix([
+      ["保暖衬衫", "M", "L", "XL"],
+      ["901", "225", "413", ""],
+      ["902", "112", "272", "243"],
+    ]);
+    expect(rows).toEqual([
+      expect.objectContaining({ styleNo: "保暖衬衫", color: "901", size: "M", quantity: 225, inputError: null }),
+      expect.objectContaining({ styleNo: "保暖衬衫", color: "901", size: "L", quantity: 413, inputError: null }),
+      expect.objectContaining({ styleNo: "保暖衬衫", color: "902", size: "M", quantity: 112, inputError: null }),
+      expect.objectContaining({ styleNo: "保暖衬衫", color: "902", size: "L", quantity: 272, inputError: null }),
+      expect.objectContaining({ styleNo: "保暖衬衫", color: "902", size: "XL", quantity: 243, inputError: null }),
+    ]);
+  });
+
+  it("rejects files that do not use a supported template shape", () => {
+    expect(() => parseSimpleImportMatrix([["商品", "数量"]])).toThrow("表格没有可导入的数据行");
   });
 });
 

@@ -4,6 +4,13 @@ export const documentTypes = ["INBOUND", "OUTBOUND", "RETURN", "STOCKTAKE", "ADJ
 export const documentStatuses = ["DRAFT", "PENDING_APPROVAL", "CONFIRMED", "RESERVED", "POSTED", "CANCELLED", "REVERSED"] as const;
 export const stockStatuses = ["SELLABLE", "INSPECTION", "DAMAGED"] as const;
 
+export const aiModelConfigSchema = z.object({
+  baseUrl: z.string().url().max(500).transform((value) => value.replace(/\/$/, "")),
+  model: z.string().trim().min(1).max(120),
+  apiKey: z.string().max(500).optional().default(""),
+  enabled: z.boolean().default(true),
+});
+
 export const createWarehouseSchema = z.object({
   code: z.string().trim().min(1).max(30).regex(/^[A-Za-z0-9_-]+$/, "仓库编码只能包含字母、数字、下划线和连字符"),
   name: z.string().trim().min(1).max(80),
@@ -23,6 +30,19 @@ export const createMemberSchema = z.object({
   email: z.string().email(),
   password: z.string().min(10).max(128),
   roleId: z.string().cuid(),
+});
+
+export const updateMemberSchema = z.object({
+  name: z.string().min(2).max(50),
+  email: z.string().email(),
+  roleId: z.string().cuid(),
+  password: z.string().min(10).max(128).optional().or(z.literal("")),
+});
+
+export const updateSelfSchema = z.object({
+  name: z.string().min(2).max(50),
+  email: z.string().email(),
+  password: z.string().min(10).max(128).optional().or(z.literal("")),
 });
 
 export const variantSchema = z.object({
@@ -140,11 +160,15 @@ export const reportSpecSchema = z.object({
 
 export const createExportSchema = z.object({
   prompt: z.string().min(2).max(500),
+  dataset: z.enum(reportDatasets).optional(),
   format: z.enum(reportFormats).default("xlsx"),
 });
 
+export type AiModelConfigInput = z.infer<typeof aiModelConfigSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 export type CreateMemberInput = z.infer<typeof createMemberSchema>;
+export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
+export type UpdateSelfInput = z.infer<typeof updateSelfSchema>;
 export type CreateStyleInput = z.infer<typeof createStyleSchema>;
 export type UpdateStyleInput = z.infer<typeof updateStyleSchema>;
 export type CreateWarehouseInput = z.infer<typeof createWarehouseSchema>;

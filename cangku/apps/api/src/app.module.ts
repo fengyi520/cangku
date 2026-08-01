@@ -4,6 +4,8 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 import { APP_GUARD } from "@nestjs/core";
 import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
 import { ScheduleModule } from "@nestjs/schedule";
+import { AiChatModule } from "./ai-chat.module";
+import { AiConfigModule } from "./ai-config.module";
 import { AuthModule } from "./auth.module";
 import { DailyOutboundModule } from "./daily-outbound.module";
 import { HealthController } from "./health.controller";
@@ -30,6 +32,8 @@ import { WarehousesModule } from "./warehouses.module";
       }),
     }),
     PrismaModule,
+    AiConfigModule,
+    AiChatModule,
     AuthModule,
     WarehouseModule,
     WarehousesModule,

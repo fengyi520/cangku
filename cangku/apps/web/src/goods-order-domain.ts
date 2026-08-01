@@ -39,6 +39,33 @@ function normalized(value: unknown) {
   return String(value ?? "").trim().toLowerCase().replaceAll(" ", "");
 }
 
+function colorCodeFromSku(sku: InventoryRow) {
+  const parts = sku.skuCode.split("-").map((part) => part.trim()).filter(Boolean);
+  let sizeIndex = -1;
+  for (let index = parts.length - 1; index >= 0; index -= 1) if (normalized(parts[index]) === normalized(sku.size)) { sizeIndex = index; break; }
+  return sizeIndex > 0 ? normalized(parts[sizeIndex - 1]) : "";
+}
+
+function matrixMatchScore(sku: InventoryRow, styleValue: unknown, colorValue: unknown, sizeValue: unknown) {
+  if (normalized(sku.size) !== normalized(sizeValue)) return -1;
+  const style = normalized(styleValue);
+  const color = normalized(colorValue);
+  let score = 0;
+  if (normalized(sku.style.styleNo) === style) score += 4;
+  else if (normalized(sku.style.name) === style) score += 2;
+  else return -1;
+  if (normalized(sku.color) === color) score += 2;
+  else if (colorCodeFromSku(sku) === color) score += 1;
+  else return -1;
+  if (normalized(sku.style.styleNo) === color) score -= 3;
+  return score;
+}
+
+function bestMatrixMatch(inventory: InventoryRow[], styleValue: unknown, colorValue: unknown, sizeValue: unknown) {
+  const ranked = inventory.map((sku) => ({ sku, score: matrixMatchScore(sku, styleValue, colorValue, sizeValue) })).filter((item) => item.score >= 0).sort((left, right) => right.score - left.score);
+  return ranked.length && (ranked.length === 1 || ranked[0].score > ranked[1].score) ? ranked[0].sku : null;
+}
+
 export function parseClipboardTable(text: string, inventory: InventoryRow[]) {
   const rows = text.split(/\r?\n/).map((line) => line.split(/\t|,/).map((cell) => cell.trim())).filter((row) => row.some(Boolean));
   if (!rows.length) return { matches: [], errors: ["没有可解析的数据"] };
@@ -66,10 +93,11 @@ export function parseClipboardTable(text: string, inventory: InventoryRow[]) {
     return { matches, errors };
   }
 
+  const matrixStyle = rows[0][0] ?? "";
   const sizes = rows[0].slice(1).map(String).filter(Boolean);
   if (!sizes.length) return { matches: [], errors: ["表头需要包含数量列或尺码列"] };
   for (const [rowIndex, row] of rows.slice(1).entries()) {
-    const styleNo = row[0] ?? "";
+    const colorOrCode = row[0] ?? "";
     for (const [offset, size] of sizes.entries()) {
       const quantity = Number(String(row[offset + 1] ?? "").replaceAll(",", ""));
       if (!String(row[offset + 1] ?? "").trim()) continue;
@@ -77,9 +105,9 @@ export function parseClipboardTable(text: string, inventory: InventoryRow[]) {
         errors.push(`第 ${rowIndex + 2} 行 ${size} 数量必须为正整数`);
         continue;
       }
-      const candidates = inventory.filter((sku) => normalized(sku.style.styleNo) === normalized(styleNo) && normalized(sku.size) === normalized(size));
-      if (candidates.length !== 1) errors.push(`第 ${rowIndex + 2} 行 ${styleNo}/${size} 无法唯一匹配颜色`);
-      else matches.push({ skuId: candidates[0].id, quantity });
+      const sku = bestMatrixMatch(inventory, matrixStyle, colorOrCode, size);
+      if (!sku) errors.push(`第 ${rowIndex + 2} 行 ${colorOrCode}/${size} 无法唯一匹配现有 SKU`);
+      else matches.push({ skuId: sku.id, quantity });
     }
   }
   return { matches, errors };

@@ -98,6 +98,7 @@ model Organization {
   notifications        Notification[]
   mappingTemplates     MappingTemplate[]
   automationSettings   WarehouseAutomationSetting[]
+  aiModelConfig        AiModelConfig?
   dailyOutboundBatches DailyOutboundBatch[]
   simpleImports        SimpleImportSession[]
 }
@@ -156,6 +157,7 @@ model User {
   auditEvents                 AuditEvent[]
   notifications               Notification[]
   automationSettings          WarehouseAutomationSetting[]
+  updatedAiModelConfigs       AiModelConfig[]
   createdDailyOutboundBatches DailyOutboundBatch[]         @relation("DailyOutboundCreatedBy")
   updatedDailyOutboundBatches DailyOutboundBatch[]         @relation("DailyOutboundUpdatedBy")
   simpleImports               SimpleImportSession[]
@@ -443,6 +445,22 @@ model Notification {
   user           User         @relation(fields: [userId], references: [id])
 
   @@index([userId, readAt, createdAt])
+}
+
+model AiModelConfig {
+  id                  String       @id @default(cuid())
+  organizationId      String       @unique
+  baseUrl             String
+  model               String
+  encryptedApiKey     String
+  enabled             Boolean      @default(true)
+  updatedById         String
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  organization        Organization @relation(fields: [organizationId], references: [id])
+  updatedBy           User         @relation(fields: [updatedById], references: [id])
+
+  @@index([updatedAt])
 }
 
 model WarehouseAutomationSetting {

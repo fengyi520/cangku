@@ -21,6 +21,42 @@ const headerAliases = {
   note: new Set(["备注", "note", "remark"]),
 };
 
+function parseStyleSizeMatrix(matrix: unknown[][]) {
+  const headerIndex = matrix.slice(0, 5).findIndex((row) => row.slice(1).some((value) => String(value ?? "").trim()));
+  if (headerIndex < 0) throw new Error("模板必须包含：款号、颜色、尺码、数量，或使用左上角商品、首行尺码、首列颜色的矩阵");
+  const header = matrix[headerIndex];
+  const styleNo = String(header[0] ?? "").trim();
+  const sizes = header.slice(1).map((value) => String(value ?? "").trim());
+  if (!styleNo || !sizes.some(Boolean)) throw new Error("矩阵模板必须在左上角填写商品名称或款号，并在首行填写尺码");
+  const grouped = new Map<string, Omit<ParsedSimpleImportRow, "key" | "inputError">>();
+  for (const [offset, source] of matrix.slice(headerIndex + 1).entries()) {
+    const color = String(source[0] ?? "").trim();
+    if (!color) continue;
+    for (const [sizeOffset, size] of sizes.entries()) {
+      if (!size) continue;
+      const rawQuantity = String(source[sizeOffset + 1] ?? "").replaceAll(",", "").trim();
+      if (!rawQuantity) continue;
+      const quantity = Number(rawQuantity);
+      const key = `${styleNo}\u0000${color}\u0000${size}`;
+      const existing = grouped.get(key);
+      grouped.set(key, {
+        sourceRows: [...(existing?.sourceRows ?? []), headerIndex + offset + 2],
+        styleNo,
+        color,
+        size,
+        quantity: (existing?.quantity ?? 0) + quantity,
+        note: null,
+      });
+    }
+  }
+  if (!grouped.size) throw new Error("表格没有可导入的数据行");
+  return [...grouped.entries()].map(([key, row]): ParsedSimpleImportRow => ({
+    key,
+    ...row,
+    inputError: !row.styleNo || !row.color || !row.size ? "商品、颜色和尺码不能为空" : !Number.isInteger(row.quantity) || row.quantity <= 0 ? "数量必须为正整数" : null,
+  }));
+}
+
 export function parseSimpleImportMatrix(matrix: unknown[][]) {
   if (!matrix.length) throw new Error("表格没有数据");
   if (matrix.length > 10_001) throw new Error("简单导入最多支持 10,000 行");
@@ -34,7 +70,7 @@ export function parseSimpleImportMatrix(matrix: unknown[][]) {
     quantity: column(headerAliases.quantity),
     note: column(headerAliases.note),
   };
-  if ([columns.styleNo, columns.color, columns.size, columns.quantity].some((index) => index < 0)) throw new Error("模板必须包含：款号、颜色、尺码、数量");
+  if ([columns.styleNo, columns.color, columns.size, columns.quantity].some((index) => index < 0)) return parseStyleSizeMatrix(matrix);
 
   const grouped = new Map<string, Omit<ParsedSimpleImportRow, "key" | "inputError">>();
   for (const [offset, source] of matrix.slice(headerIndex + 1).entries()) {

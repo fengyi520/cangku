@@ -6,13 +6,16 @@ const inventory: InventoryRow[] = [
   sku("sku-m", "SKU-901-M", "901", "保暖衬衫", "黑色", "M", 20),
   sku("sku-l", "SKU-901-L", "901", "保暖衬衫", "黑色", "L", 18),
   sku("sku-902-m", "SKU-902-M", "902", "保暖衬衫", "灰色", "M", 12),
+  sku("sku-901-code-m", "BS-901-M", "BS", "保暖衬衫", "曜石黑", "M", 30),
+  sku("sku-901-code-l", "BS-901-L", "BS", "保暖衬衫", "曜石黑", "L", 30),
+  sku("sku-902-code-m", "BS-902-M", "BS", "保暖衬衫", "雾霾蓝", "M", 30),
 ];
 
 describe("goods order matrix", () => {
   it("groups SKU rows by style and color", () => {
     const rows = groupInventoryMatrix(inventory);
-    expect(rows).toHaveLength(2);
-    expect(rows[0].skus.map((item) => item.size)).toEqual(["M", "L"]);
+    const blackRows = rows.find((row) => row.styleNo === "901" && row.color === "黑色");
+    expect(blackRows?.skus.map((item) => item.size)).toEqual(["M", "L"]);
   });
 
   it("flattens only positive integer quantities", () => {
@@ -28,10 +31,10 @@ describe("goods order matrix", () => {
     expect(result.matches).toEqual([{ skuId: "sku-m", quantity: 5 }]);
   });
 
-  it("parses size matrix clipboard data when style and size are unique", () => {
-    const result = parseClipboardTable("款号\tM\tL\n901\t4\t6", inventory);
+  it("parses style matrix clipboard data with color codes as rows and sizes as columns", () => {
+    const result = parseClipboardTable("保暖衬衫\tM\tL\tXL\n901\t225\t413\n902\t112", inventory);
     expect(result.errors).toEqual([]);
-    expect(result.matches).toEqual([{ skuId: "sku-m", quantity: 4 }, { skuId: "sku-l", quantity: 6 }]);
+    expect(result.matches).toEqual([{ skuId: "sku-901-code-m", quantity: 225 }, { skuId: "sku-901-code-l", quantity: 413 }, { skuId: "sku-902-code-m", quantity: 112 }]);
   });
 
   it("keeps manual values on AI conflict and requires review for low confidence", () => {

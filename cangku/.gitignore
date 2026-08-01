@@ -15,3 +15,6 @@ backups/
 .vite/
 .auth/
 apps/api/prisma/*.db
+ORDER_FLOW_TODO.md
+FEATURE_CHECK_TODO.md
+*_TODO.md

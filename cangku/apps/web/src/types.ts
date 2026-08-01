@@ -10,7 +10,7 @@ export type Style = {
   year?: number | null;
   skus: Sku[];
 };
-export type Sku = { id: string; skuCode: string; color: string; size: string; minStock: number; active: boolean };
+export type Sku = { id: string; skuCode: string; color: string; size: string; minStock: number; active: boolean; onHand?: number; reserved?: number; available?: number; lowStock?: boolean };
 export type InventoryRow = Sku & {
   style: Omit<Style, "skus">;
   onHand: number;
@@ -46,7 +46,7 @@ export type StockDocument = {
   lines: DocumentLine[];
   approvals: Array<{ id: string; status: string }>;
 };
-export type ImportJob = { id: string; kind: string; status: string; fileName: string; progress: number; error?: string | null; createdAt: string; appliedDocumentId?: string | null; appliedAt?: string | null; _count?: { rows: number }; rows?: ImportRow[] };
+export type ImportJob = { id: string; kind: string; status: string; warehouseId: string; fileName: string; progress: number; error?: string | null; createdAt: string; appliedDocumentId?: string | null; appliedAt?: string | null; _count?: { rows: number }; rows?: ImportRow[] };
 export type ImportRow = { id: string; rowNumber: number; raw: Record<string, unknown>; normalized: Record<string, unknown>; confidence: number; validationErrors: string[]; accepted: boolean; skuId?: string | null; sku?: InventoryRow };
 export type ExportJob = { id: string; status: string; prompt: string; format: string; progress: number; error?: string | null; createdAt: string };
 export type Approval = { id: string; status: string; comment?: string | null; createdAt: string; actor?: { name: string }; document: StockDocument };
@@ -103,6 +103,7 @@ export type DailyOutboundDay = {
   automaticBatch?: DailyOutboundBatch | null;
   supplements: DailyOutboundBatch[];
 };
+export type AiModelSettings = { baseUrl: string; model: string; apiKeyMasked: string; hasApiKey: boolean; enabled: boolean; source: "database" | "environment" | "none"; updatedAt?: string | null };
 export type AutomationSettings = {
   currentTime: string;
   pendingTime?: string | null;

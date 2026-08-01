@@ -42,6 +42,17 @@ function json(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
 
+function normalized(value: unknown) {
+  return String(value ?? "").trim().toLowerCase().replaceAll(" ", "");
+}
+
+function colorCodeFromSku(skuCode: string, size: string) {
+  const parts = skuCode.split("-").map((part) => part.trim()).filter(Boolean);
+  let sizeIndex = -1;
+  for (let index = parts.length - 1; index >= 0; index -= 1) if (normalized(parts[index]) === normalized(size)) { sizeIndex = index; break; }
+  return sizeIndex > 0 ? parts[sizeIndex - 1] : "";
+}
+
 @Injectable()
 class SimpleImportsService {
   constructor(
@@ -79,14 +90,30 @@ class SimpleImportsService {
     }
     const styleNos = [...new Set(parsedRows.map((row) => row.styleNo).filter(Boolean))];
     const styles = await this.prisma.productStyle.findMany({
-      where: { organizationId: user.organizationId, styleNo: { in: styleNos } },
+      where: { organizationId: user.organizationId, OR: [{ styleNo: { in: styleNos } }, { name: { in: styleNos } }] },
       include: { skus: true },
     });
-    const skuMap = new Map<string, (typeof styles)[number]["skus"][number]>(
-      styles.flatMap((style) => style.skus.map((sku): [string, (typeof styles)[number]["skus"][number]] => [`${style.styleNo}\u0000${sku.color}\u0000${sku.size}`, sku])),
-    );
-    const rows: PreviewRow[] = parsedRows.map(({ key, inputError, ...row }) => {
-      const sku = skuMap.get(key);
+    const skuCandidates = styles.flatMap((style) => style.skus.map((sku) => ({ style, sku })));
+    const findSku = (styleValue: string, colorValue: string, sizeValue: string) => {
+      const ranked = skuCandidates
+        .map(({ style, sku }) => {
+          if (normalized(sku.size) !== normalized(sizeValue)) return { sku, score: -1 };
+          let score = 0;
+          if (normalized(style.styleNo) === normalized(styleValue)) score += 4;
+          else if (normalized(style.name) === normalized(styleValue)) score += 2;
+          else return { sku, score: -1 };
+          if (normalized(sku.color) === normalized(colorValue)) score += 2;
+          else if (normalized(colorCodeFromSku(sku.skuCode, sku.size)) === normalized(colorValue)) score += 1;
+          else return { sku, score: -1 };
+          if (normalized(style.styleNo) === normalized(colorValue)) score -= 3;
+          return { sku, score };
+        })
+        .filter((item) => item.score >= 0)
+        .sort((left, right) => right.score - left.score);
+      return ranked.length && (ranked.length === 1 || ranked[0].score > ranked[1].score) ? ranked[0].sku : null;
+    };
+    const rows: PreviewRow[] = parsedRows.map(({ inputError, ...row }) => {
+      const sku = findSku(row.styleNo, row.color, row.size);
       let error: string | null = inputError;
       if (!error && !sku) error = "未找到对应的款号、颜色和尺码";
       else if (!error && sku && !sku.active) error = "该商品规格已停用";

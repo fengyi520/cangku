@@ -85,6 +85,11 @@ export class InventoryWorkflowService {
   async createDraft(user: AuthUser, input: unknown, idempotencyKey: string | undefined, request: Request) {
     const parsed = createDraftSchema.safeParse(input);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    const preview = await this.previewMovement(user, parsed.data);
+    return this.createDraftFromPreview(user, preview.previewToken, idempotencyKey, request);
+  }
+
+  async createDraftFromPreview(user: AuthUser, previewToken: string, idempotencyKey: string | undefined, request: Request, expectedType?: "INBOUND" | "OUTBOUND") {
     if (!idempotencyKey || idempotencyKey.length < 8 || idempotencyKey.length > 200) {
       throw new BadRequestException("创建草稿必须提供有效的 Idempotency-Key");
     }
@@ -93,10 +98,14 @@ export class InventoryWorkflowService {
       include: { createdBy: { select: { id: true, name: true } }, postedBy: { select: { id: true, name: true } }, lines: { include: { sku: { include: { style: true } } } }, approvals: true },
     });
     if (existing) return existing;
-
-    const preview = await this.previewMovement(user, parsed.data);
-    const token = this.verify(preview.previewToken);
-    const data = canonicalMovement(token.data as MovementData);
+    const token = this.verify(previewToken);
+    if (token.kind !== "movement") throw new BadRequestException("预览令牌类型无效");
+    const tokenData = canonicalMovement(token.data as MovementData);
+    if (expectedType && tokenData.type !== expectedType) throw new BadRequestException("预览业务类型不匹配");
+    const refreshedPreview = await this.previewMovement(user, tokenData);
+    if (!refreshedPreview.valid) throw new ConflictException("预览已失效，请重新预览");
+    const refreshedToken = this.verify(refreshedPreview.previewToken);
+    const data = canonicalMovement(refreshedToken.data as MovementData);
     const document = await this.prisma.stockDocument.create({
       data: {
         organizationId: user.organizationId,
@@ -137,7 +146,7 @@ export class InventoryWorkflowService {
     const parsed = movementPreviewSchema.safeParse(input);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
     const warehouse = await this.assertWarehouse(user, parsed.data.warehouseId);
-    const lines = this.posting.aggregateLines(parsed.data.lines);
+    const lines = this.posting.aggregateLines(parsed.data.lines).sort((left, right) => `${left.skuId}:${left.stockStatus ?? StockStatus.SELLABLE}`.localeCompare(`${right.skuId}:${right.stockStatus ?? StockStatus.SELLABLE}`));
     const skuIds = lines.map((line) => line.skuId);
     const skus = await this.prisma.sku.findMany({
       where: { id: { in: skuIds }, active: true, style: { organizationId: user.organizationId } },

@@ -12,24 +12,22 @@ ALTER TABLE "StockDocumentLine"
 -- Existing import records belonged to the organization's first active warehouse.
 ALTER TABLE "ImportJob" ADD COLUMN "warehouseId" TEXT;
 UPDATE "ImportJob" AS job
-SET "warehouseId" = warehouse.id
-FROM LATERAL (
-  SELECT id FROM "Warehouse"
-  WHERE "organizationId" = job."organizationId"
-  ORDER BY "active" DESC, "createdAt" ASC
+SET "warehouseId" = (
+  SELECT warehouse.id FROM "Warehouse" AS warehouse
+  WHERE warehouse."organizationId" = job."organizationId"
+  ORDER BY warehouse."active" DESC, warehouse."createdAt" ASC
   LIMIT 1
-) AS warehouse;
+);
 ALTER TABLE "ImportJob" ALTER COLUMN "warehouseId" SET NOT NULL;
 
 ALTER TABLE "SimpleImportSession" ADD COLUMN "warehouseId" TEXT;
 UPDATE "SimpleImportSession" AS session
-SET "warehouseId" = warehouse.id
-FROM LATERAL (
-  SELECT id FROM "Warehouse"
-  WHERE "organizationId" = session."organizationId"
-  ORDER BY "active" DESC, "createdAt" ASC
+SET "warehouseId" = (
+  SELECT warehouse.id FROM "Warehouse" AS warehouse
+  WHERE warehouse."organizationId" = session."organizationId"
+  ORDER BY warehouse."active" DESC, warehouse."createdAt" ASC
   LIMIT 1
-) AS warehouse;
+);
 ALTER TABLE "SimpleImportSession" ALTER COLUMN "warehouseId" SET NOT NULL;
 
 CREATE UNIQUE INDEX "StockDocument_reversalOfId_key" ON "StockDocument"("reversalOfId");

@@ -3,6 +3,7 @@ import {
   Body,
   ConflictException,
   Controller,
+  Delete,
   ForbiddenException,
   Get,
   Headers,
@@ -65,15 +66,25 @@ export class WarehouseService {
   }
 
   async listStyles(user: AuthUser, search?: string) {
-    return this.prisma.productStyle.findMany({
+    const warehouse = await this.warehouse(user.organizationId);
+    const styles = await this.prisma.productStyle.findMany({
       where: {
         organizationId: user.organizationId,
         ...(search ? { OR: [{ styleNo: { contains: search, mode: "insensitive" } }, { name: { contains: search, mode: "insensitive" } }] } : {}),
       },
-      include: { skus: { orderBy: [{ color: "asc" }, { size: "asc" }] } },
+      include: { skus: { include: { balances: { where: { warehouseId: warehouse.id } } }, orderBy: [{ color: "asc" }, { size: "asc" }] } },
       orderBy: { updatedAt: "desc" },
       take: 200,
     });
+    return styles.map((style) => ({
+      ...style,
+      skus: style.skus.map((sku) => {
+        const totals = sku.balances.reduce((result, balance) => ({ onHand: result.onHand + balance.onHand, reserved: result.reserved + balance.reserved }), { onHand: 0, reserved: 0 });
+        const available = totals.onHand - totals.reserved;
+        const { balances: _balances, ...rest } = sku;
+        return { ...rest, ...totals, available, lowStock: available <= sku.minStock };
+      }),
+    }));
   }
 
   async createStyle(user: AuthUser, input: unknown, request: Request) {
@@ -146,6 +157,28 @@ export class WarehouseService {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") throw new ConflictException("SKU 编码或颜色尺码组合已存在");
       throw error;
     }
+  }
+
+  async deleteStyle(user: AuthUser, id: string, request: Request) {
+    const before = await this.prisma.productStyle.findFirst({ where: { id, organizationId: user.organizationId }, include: { skus: true } });
+    if (!before) throw new NotFoundException("商品款式不存在");
+    const skuIds = before.skus.map((sku) => sku.id);
+    const [balances, documentLines, ledgerEntries, dailyLines, importRows] = await Promise.all([
+      this.prisma.stockBalance.count({ where: { skuId: { in: skuIds }, OR: [{ onHand: { not: 0 } }, { reserved: { not: 0 } }] } }),
+      this.prisma.stockDocumentLine.count({ where: { skuId: { in: skuIds } } }),
+      this.prisma.inventoryLedgerEntry.count({ where: { skuId: { in: skuIds } } }),
+      this.prisma.dailyOutboundLine.count({ where: { skuId: { in: skuIds } } }),
+      this.prisma.importRow.count({ where: { skuId: { in: skuIds } } }),
+    ]);
+    const hasHistory = balances + documentLines + ledgerEntries + dailyLines + importRows > 0;
+    if (hasHistory) {
+      const updated = await this.prisma.productStyle.update({ where: { id }, data: { skus: { updateMany: { where: {}, data: { active: false } } } }, include: { skus: { orderBy: [{ color: "asc" }, { size: "asc" }] } } });
+      await this.audit(user, request, "style.archived", "ProductStyle", id, before, updated);
+      return { deleted: false, archived: true, style: updated };
+    }
+    await this.prisma.productStyle.delete({ where: { id } });
+    await this.audit(user, request, "style.deleted", "ProductStyle", id, before, null);
+    return { deleted: true, archived: false };
   }
 
   async inventory(user: AuthUser, search?: string, warehouseId?: string) {
@@ -567,6 +600,11 @@ class CatalogController {
   @RequirePermissions("catalog.manage")
   update(@CurrentUser() user: AuthUser, @Param("id") id: string, @Body() input: unknown, @Req() request: Request) {
     return this.service.updateStyle(user, id, input, request);
+  }
+  @Delete(":id")
+  @RequirePermissions("catalog.manage")
+  delete(@CurrentUser() user: AuthUser, @Param("id") id: string, @Req() request: Request) {
+    return this.service.deleteStyle(user, id, request);
   }
 }
 

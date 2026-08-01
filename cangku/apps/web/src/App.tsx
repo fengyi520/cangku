@@ -39,11 +39,10 @@ import {
 } from "lucide-react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError, downloadExport, jsonBody } from "./api";
-import { DailyOutboundPage } from "./DailyOutboundPage";
 import { GoodsOrderEditorPage } from "./GoodsOrderEditorPage";
 import { colorSlot, signed, splitList } from "./domain";
 import { SimpleImportDialog } from "./SimpleImportDialog";
-import type { Approval, AuditEvent, AutomationSettings, ExportJob, ImportJob, InventoryRow, Notification, Role, Sku, StockDocument, Style, User } from "./types";
+import type { AiModelSettings, Approval, AuditEvent, AutomationSettings, ExportJob, ImportJob, InventoryRow, Notification, Role, Sku, StockDocument, Style, User } from "./types";
 
 const typeLabels: Record<string, string> = {
   INBOUND: "入库",
@@ -79,11 +78,21 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : "操作失败，请稍后重试";
 }
 
+function colorCodeFromSkuCode(skuCode: string) {
+  const parts = skuCode.split("-").map((part) => part.trim()).filter(Boolean);
+  return parts.length >= 3 ? parts[parts.length - 2] : parts[0] || "COLOR";
+}
+
 function can(user: User, permission: string) {
   if (user.role.permissions.includes("*") || user.role.permissions.includes(permission)) return true;
   const [resource, action] = permission.split(".");
   return action === "view" && user.role.permissions.includes(`${resource}.manage`);
 }
+
+const permissionOptions = [
+  ["dashboard.view", "查看总览"], ["catalog.view", "查看商品"], ["catalog.manage", "管理商品"], ["inventory.view", "查看库存"], ["documents.view", "查看单据"], ["documents.manage", "管理单据"],
+  ["imports.manage", "导入资料"], ["exports.manage", "导出报表"], ["approvals.view", "查看审批"], ["approvals.decide", "审批处理"], ["audit.view", "查看审计"], ["members.manage", "成员角色管理"], ["settings.manage", "系统设置"],
+] as const;
 
 export function App() {
   const me = useQuery({ queryKey: ["me"], queryFn: () => api<{ user: User }>("/auth/me"), retry: false });
@@ -150,16 +159,16 @@ function LoginPage() {
   );
 }
 
-const navItems = [
+type NavItem = { to: string; label: string; icon: typeof LayoutDashboard; permission: string };
+
+const navItems: NavItem[] = [
   { to: "/", label: "总览", icon: LayoutDashboard, permission: "dashboard.view" },
   { to: "/inventory", label: "库存", icon: Boxes, permission: "inventory.view" },
   { to: "/catalog", label: "商品", icon: Shirt, permission: "catalog.view" },
-  { to: "/documents/INBOUND", label: "入库", icon: ArrowDownToLine, permission: "documents.manage" },
+  { to: "/documents/new", label: "新建表单", icon: FileSpreadsheet, permission: "documents.manage" },
   { to: "/daily-outbound", label: "今日出库", icon: Clock3, permission: "documents.manage" },
-  { to: "/documents/OUTBOUND", label: "出库", icon: ArrowUpFromLine, permission: "documents.manage" },
-  { to: "/documents/RETURN", label: "退货", icon: RotateCcw, permission: "documents.manage" },
-  { to: "/documents/STOCKTAKE", label: "盘点", icon: ClipboardCheck, permission: "documents.manage" },
   { to: "/imports", label: "AI 导入", icon: Sparkles, permission: "imports.manage" },
+  { to: "/ai-chat", label: "AI 助手", icon: Sparkles, permission: "inventory.view" },
   { to: "/reports", label: "报表", icon: FileSpreadsheet, permission: "reports.export" },
   { to: "/approvals", label: "审批", icon: ShieldCheck, permission: "approvals.view" },
   { to: "/audit", label: "审计", icon: History, permission: "audit.view" },
@@ -202,7 +211,7 @@ function AppShell({ user }: { user: User }) {
       <section className="workspace">
         <header className="topbar">
           <button className="icon-button mobile-only" aria-label="打开菜单" onClick={() => setMenuOpen(true)}><Menu size={20} /></button>
-          <div className="breadcrumb">主仓 <span>/</span> {navItems.find((item) => item.to === "/" ? location.pathname === "/" : location.pathname.startsWith(item.to))?.label ?? "工作台"}</div>
+          <div className="breadcrumb">主仓 <span>/</span> {visibleNav.find((item) => item.to === "/" ? location.pathname === "/" : location.pathname.startsWith(item.to))?.label ?? "工作台"}</div>
           <div className="topbar-actions">
             <time>{new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "short" }).format(new Date())}</time>
             <button className="icon-button notification-button" aria-label={`通知 ${unread} 条未读`} onClick={() => setNotificationsOpen((value) => !value)}><Bell size={19} />{unread > 0 && <b>{unread > 9 ? "9+" : unread}</b>}</button>
@@ -213,22 +222,23 @@ function AppShell({ user }: { user: User }) {
             <Route path="/" element={<DashboardPage />} />
             <Route path="/inventory" element={<InventoryPage />} />
             <Route path="/catalog" element={<CatalogPage user={user} />} />
-            <Route path="/daily-outbound" element={<DailyOutboundPage canReverse={can(user, "inventory.adjust")} />} />
+            <Route path="/daily-outbound" element={<GoodsOrderEditorPage canUseAi={can(user, "imports.manage")} defaultType="OUTBOUND" lockedType />} />
             <Route path="/documents/new" element={<GoodsOrderEditorPage canUseAi={can(user, "imports.manage")} />} />
             <Route path="/documents/:id/edit" element={<GoodsOrderEditorPage canUseAi={can(user, "imports.manage")} />} />
             <Route path="/documents/:type" element={<DocumentsPage user={user} />} />
             <Route path="/imports" element={<ImportsPage />} />
+            <Route path="/ai-chat" element={<AiChatPage user={user} />} />
             <Route path="/reports" element={<ReportsPage />} />
             <Route path="/approvals" element={<ApprovalsPage />} />
             <Route path="/audit" element={<AuditPage />} />
-            <Route path="/members" element={<MembersPage />} />
+            <Route path="/members" element={<MembersPage user={user} />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
       </section>
       <nav className="mobile-nav" aria-label="移动端主导航">
-        {visibleNav.filter((item) => ["/", "/inventory", "/documents/INBOUND", "/daily-outbound", "/imports"].includes(item.to)).map((item) => {
+        {visibleNav.filter((item) => ["/", "/inventory", "/documents/new", "/daily-outbound", "/imports"].includes(item.to)).map((item) => {
           const active = item.to === "/" ? location.pathname === "/" : location.pathname.startsWith(item.to);
           return <Link key={item.to} to={item.to} className={active ? "active" : ""}><item.icon size={19} /><span>{item.label.replace("AI ", "")}</span></Link>;
         })}
@@ -256,11 +266,13 @@ function NotificationDrawer({ items, onClose }: { items: Notification[]; onClose
 }
 
 function DashboardPage() {
+  const [lowStockOpen, setLowStockOpen] = useState(false);
   const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: () => api<any>("/dashboard") });
   const inventory = useQuery({ queryKey: ["inventory", ""], queryFn: () => api<InventoryRow[]>("/inventory/balances") });
   if (dashboard.isLoading || inventory.isLoading) return <PageLoading />;
   if (!dashboard.data) return <FatalState message={errorText(dashboard.error)} onRetry={() => dashboard.refetch()} />;
   const metrics = dashboard.data.metrics;
+  const lowStockRows = (inventory.data ?? []).filter((row) => row.lowStock).sort((left, right) => left.available - right.available || left.style.styleNo.localeCompare(right.style.styleNo));
   return (
     <>
       <PageHeader eyebrow="今日仓况" title="库存总览" description={`${dashboard.data.warehouse.name}的实时可用量、预警和待处理事项。`} />
@@ -268,13 +280,13 @@ function DashboardPage() {
         <Metric label="可用库存" value={metrics.available.toLocaleString()} unit="件" tone="ink" />
         <Metric label="在库总量" value={metrics.onHand.toLocaleString()} unit="件" />
         <Metric label="已预留" value={metrics.reserved.toLocaleString()} unit="件" />
-        <Metric label="低库存 SKU" value={metrics.lowStock.toLocaleString()} unit="项" tone={metrics.lowStock ? "warn" : "ok"} />
+        <Metric label="低库存 SKU" value={metrics.lowStock.toLocaleString()} unit="项" tone={metrics.lowStock ? "warn" : "ok"} onClick={() => setLowStockOpen(true)} />
         <Metric label="待审批" value={metrics.pendingApprovals.toLocaleString()} unit="单" tone={metrics.pendingApprovals ? "danger" : "ok"} />
       </section>
       <section className="dashboard-grid">
         <div className="section-block matrix-block">
-          <SectionHeading title="款色尺码矩阵" meta="可用库存" action={<Link className="text-link" to="/inventory">查看全部</Link>} />
-          <InventoryMatrix rows={inventory.data ?? []} />
+          <SectionHeading title="各商品库存情况" meta="按商品汇总可用库存" action={<Link className="text-link" to="/inventory">查看全部</Link>} />
+          <ProductStockSummary rows={inventory.data ?? []} />
         </div>
         <div className="section-block activity-block">
           <SectionHeading title="最近单据" meta="按更新时间" />
@@ -289,8 +301,28 @@ function DashboardPage() {
           </div>
         </div>
       </section>
+      {lowStockOpen && <LowStockModal rows={lowStockRows} onClose={() => setLowStockOpen(false)} />}
     </>
   );
+}
+
+function ProductStockSummary({ rows }: { rows: InventoryRow[] }) {
+  if (!rows.length) return <EmptyState icon={<Boxes />} title="还没有库存" description="先创建商品并完成一张入库单。" />;
+  const groups = new Map<string, { styleNo: string; name: string; skuCount: number; available: number; onHand: number; reserved: number; lowCount: number }>();
+  for (const row of rows) {
+    const current = groups.get(row.style.id) ?? { styleNo: row.style.styleNo, name: row.style.name, skuCount: 0, available: 0, onHand: 0, reserved: 0, lowCount: 0 };
+    current.skuCount += 1;
+    current.available += row.available;
+    current.onHand += row.onHand;
+    current.reserved += row.reserved;
+    if (row.lowStock) current.lowCount += 1;
+    groups.set(row.style.id, current);
+  }
+  return <div className="product-stock-list">{[...groups.values()].sort((left, right) => right.available - left.available).map((item) => <Link className="product-stock-card" to={`/inventory?search=${encodeURIComponent(item.styleNo)}`} key={item.styleNo}><span><strong>{item.styleNo}</strong><small>{item.name}</small></span><b>{item.available.toLocaleString()}<small>可用</small></b><em>{item.skuCount} SKU · 在库 {item.onHand.toLocaleString()} · 预留 {item.reserved.toLocaleString()}{item.lowCount ? ` · ${item.lowCount} 项低库存` : ""}</em></Link>)}</div>;
+}
+
+function LowStockModal({ rows, onClose }: { rows: InventoryRow[]; onClose: () => void }) {
+  return <Modal title="低库存提醒" subtitle="这些 SKU 的可用库存已低于商品页设置的库存预警值" onClose={onClose} wide>{!rows.length ? <EmptyState icon={<Check />} title="暂无低库存" description="所有商品都高于当前预警值。" /> : <><div className="modal-toolbar"><Link className="button primary" to="/documents/new?type=INBOUND" onClick={onClose}><Plus size={15} />新建入库补货单</Link><Link className="button" to="/reports" onClick={onClose}><Download size={15} />导出预警表</Link></div><DataTable headers={["商品", "颜色 / 尺码", "SKU", "可用", "预警值"]}>{rows.map((row) => <tr key={row.id}><td><strong>{row.style.styleNo}</strong><small>{row.style.name}</small></td><td>{row.color} / {row.size}</td><td className="mono">{row.skuCode}</td><td className="number negative">{row.available}</td><td className="number">{row.minStock}</td></tr>)}</DataTable></>}</Modal>;
 }
 
 function InventoryMatrix({ rows }: { rows: InventoryRow[] }) {
@@ -320,8 +352,9 @@ function InventoryMatrix({ rows }: { rows: InventoryRow[] }) {
 }
 
 function InventoryPage() {
-  const [search, setSearch] = useState("");
-  const [appliedSearch, setAppliedSearch] = useState("");
+  const initialSearch = new URLSearchParams(useLocation().search).get("search") ?? "";
+  const [search, setSearch] = useState(initialSearch);
+  const [appliedSearch, setAppliedSearch] = useState(initialSearch);
   const [view, setView] = useState<"balance" | "ledger">("balance");
   const inventory = useQuery({ queryKey: ["inventory", appliedSearch], queryFn: () => api<InventoryRow[]>(`/inventory/balances${appliedSearch ? `?search=${encodeURIComponent(appliedSearch)}` : ""}`) });
   const ledger = useQuery({ queryKey: ["ledger"], queryFn: () => api<any[]>("/inventory/ledger"), enabled: view === "ledger" });
@@ -348,12 +381,18 @@ function InventoryPage() {
 function CatalogPage({ user }: { user: User }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<Style | null>(null);
+  const queryClient = useQueryClient();
   const styles = useQuery({ queryKey: ["styles"], queryFn: () => api<Style[]>("/catalog/styles") });
+  const remove = useMutation({
+    mutationFn: (style: Style) => api(`/catalog/styles/${style.id}`, { method: "DELETE" }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["styles"] }); queryClient.invalidateQueries({ queryKey: ["inventory"] }); queryClient.invalidateQueries({ queryKey: ["goods-order-inventory"] }); emitToast("商品已删除或停用"); },
+    onError: (error) => emitToast(errorText(error), "error"),
+  });
   return (
     <>
       <PageHeader eyebrow="商品主数据" title="款式与 SKU" description="用颜色 × 尺码矩阵维护服装规格。" action={can(user, "catalog.manage") ? <button className="button primary" onClick={() => setCreateOpen(true)}><Plus size={17} />新建款式</button> : undefined} />
       <div className="style-list">
-        {styles.isLoading ? <PageLoading /> : !styles.data?.length ? <EmptyState icon={<Shirt />} title="还没有款式" description="创建第一个款式并批量生成颜色尺码 SKU。" action={<button className="button primary" onClick={() => setCreateOpen(true)}><Plus size={17} />新建款式</button>} /> : styles.data.map((style) => <StyleRow key={style.id} style={style} onEdit={can(user, "catalog.manage") ? () => setEditing(style) : undefined} />)}
+        {styles.isLoading ? <PageLoading /> : !styles.data?.length ? <EmptyState icon={<Shirt />} title="还没有款式" description="创建第一个款式并批量生成颜色尺码 SKU。" action={<button className="button primary" onClick={() => setCreateOpen(true)}><Plus size={17} />新建款式</button>} /> : styles.data.map((style) => <StyleRow key={style.id} style={style} onEdit={can(user, "catalog.manage") ? () => setEditing(style) : undefined} onDelete={can(user, "catalog.manage") ? () => window.confirm(`确定删除商品 ${style.styleNo} · ${style.name} 吗？有历史记录的商品会改为停用，历史单据仍保留。`) && remove.mutate(style) : undefined} deleting={remove.isPending} />)}
       </div>
       {createOpen && <CreateStyleModal onClose={() => setCreateOpen(false)} />}
       {editing && <EditStyleModal style={editing} onClose={() => setEditing(null)} />}
@@ -361,16 +400,29 @@ function CatalogPage({ user }: { user: User }) {
   );
 }
 
-function StyleRow({ style, onEdit }: { style: Style; onEdit?: () => void }) {
+function StyleRow({ style, onEdit, onDelete, deleting }: { style: Style; onEdit?: () => void; onDelete?: () => void; deleting?: boolean }) {
+  const [previewOpen, setPreviewOpen] = useState(false);
   const activeSkus = style.skus.filter((sku) => sku.active);
-  const colors = [...new Set(activeSkus.map((sku) => sku.color))];
-  const sizes = [...new Set(activeSkus.map((sku) => sku.size))];
+  const colors = [...new Set(activeSkus.map((sku) => sku.color))].sort((left, right) => left.localeCompare(right, "zh-CN", { numeric: true }));
+  const sizeOrder = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL", "5XL"];
+  const sizes = [...new Set(activeSkus.map((sku) => sku.size))].sort((left, right) => { const leftIndex = sizeOrder.indexOf(left.toUpperCase()); const rightIndex = sizeOrder.indexOf(right.toUpperCase()); return (leftIndex < 0 ? 999 : leftIndex) - (rightIndex < 0 ? 999 : rightIndex) || left.localeCompare(right, "zh-CN", { numeric: true }); });
+  const totalAvailable = activeSkus.reduce((sum, sku) => sum + (sku.available ?? 0), 0);
+  const lowCount = activeSkus.filter((sku) => sku.lowStock).length;
   return (
     <article className="style-row">
-      <div className="style-summary"><span className="style-thumb"><Shirt size={24} /></span><div><span className="mono eyebrow">{style.styleNo}</span><h3>{style.name}</h3><p>{[style.brand, style.category, style.season, style.year].filter(Boolean).join(" · ") || "未填写扩展属性"}</p></div><div className="style-summary-actions"><strong className="sku-count">{activeSkus.length}<small>启用 SKU</small></strong>{onEdit && <button className="icon-button" title="编辑商品" onClick={onEdit}><Pencil size={15} /></button>}</div></div>
+      <div className="style-summary"><span className="style-thumb"><Shirt size={24} /></span><div><span className="mono eyebrow">{style.styleNo}</span><h3>{style.name}</h3><p>{[style.brand, style.category, style.season, style.year].filter(Boolean).join(" · ") || "未填写扩展属性"}</p></div><div className="style-summary-actions"><strong className="sku-count">{activeSkus.length}<small>启用 SKU</small></strong>{onEdit && <button className="icon-button" title="编辑商品" onClick={onEdit}><Pencil size={15} /></button>}{onDelete && <button className="icon-button danger" title="删除商品" disabled={deleting} onClick={onDelete}><Trash2 size={15} /></button>}</div></div>
       <div className="variant-preview"><span>颜色</span>{colors.map((color, index) => <b key={color}><i className={`swatch swatch-${index % 4}`} />{color}</b>)}<span>尺码</span>{sizes.map((size) => <b key={size}>{size}</b>)}</div>
+      <div className="stock-preview" aria-label="仅预览库存"><span>仅预览库存</span><strong>{totalAvailable.toLocaleString()}<small>可用</small></strong><em>{lowCount ? `${lowCount} 个 SKU 低于预警值` : "库存正常"}</em><button className="button small" type="button" onClick={() => setPreviewOpen(true)}>查看库存矩阵</button></div>
+      <div className="stock-preview-grid">
+        {activeSkus.map((sku) => <span key={sku.id} className={sku.lowStock ? "low" : ""}><b>{sku.color} / {sku.size}</b><strong>{(sku.available ?? 0).toLocaleString()}</strong><small>预警 {sku.minStock}</small></span>)}
+      </div>
+      {previewOpen && <Modal title={`库存预览 · ${style.styleNo}`} subtitle={`${style.name} · 仅查看，不会修改库存`} onClose={() => setPreviewOpen(false)} wide><div className="stock-preview-modal-summary"><strong>{totalAvailable.toLocaleString()}<small>可用库存</small></strong><span>{activeSkus.length} 个启用 SKU</span><em>{lowCount ? `${lowCount} 个 SKU 低于预警值` : "库存正常"}</em></div><ReadOnlyStockMatrix colors={colors} sizes={sizes} skus={activeSkus} /></Modal>}
     </article>
   );
+}
+
+function ReadOnlyStockMatrix({ colors, sizes, skus }: { colors: string[]; sizes: string[]; skus: Sku[] }) {
+  return <div className="readonly-stock-matrix" style={{ gridTemplateColumns: `minmax(92px, 1fr) repeat(${colors.length}, minmax(74px, .8fr))` }}><span className="matrix-corner">尺码 / 颜色</span>{colors.map((color, index) => <span className="matrix-size" key={color}><i className={`swatch swatch-${index % 4}`} />{color}</span>)}{sizes.flatMap((size) => [<span className="matrix-color" key={`${size}-label`}>{size}</span>, ...colors.map((color) => { const sku = skus.find((item) => item.color === color && item.size === size); return <span className={`matrix-cell ${sku?.lowStock ? "low" : ""}`} key={`${size}-${color}`}><strong>{(sku?.available ?? 0).toLocaleString()}</strong><small>预警 {sku?.minStock ?? 0}</small></span>; })])}</div>;
 }
 
 type EditableVariant = { id?: string; skuCode: string; color: string; size: string; minStock: number; active: boolean };
@@ -380,6 +432,9 @@ function EditStyleModal({ style, onClose }: { style: Style; onClose: () => void 
   const [name, setName] = useState(style.name);
   const [brand, setBrand] = useState(style.brand ?? "");
   const [category, setCategory] = useState(style.category ?? "");
+  const [newColor, setNewColor] = useState("");
+  const [newColorCode, setNewColorCode] = useState("");
+  const [newSize, setNewSize] = useState("");
   const [variants, setVariants] = useState<EditableVariant[]>(style.skus.map((sku) => ({ ...sku })));
   const update = useMutation({
     mutationFn: () => api(`/catalog/styles/${style.id}`, {
@@ -400,19 +455,38 @@ function EditStyleModal({ style, onClose }: { style: Style; onClose: () => void 
     },
   });
   const patchVariant = (index: number, patch: Partial<EditableVariant>) => setVariants((current) => current.map((variant, itemIndex) => itemIndex === index ? { ...variant, ...patch } : variant));
+  const existingColors = [...new Set(variants.map((variant) => variant.color).filter(Boolean))];
+  const existingSizes = [...new Set(variants.map((variant) => variant.size).filter(Boolean))];
   const addVariant = () => setVariants((current) => [...current, { skuCode: `${style.styleNo}-${String(current.length + 1).padStart(2, "0")}`.toUpperCase(), color: "", size: "", minStock: 0, active: true }]);
+  const addColor = () => {
+    const color = newColor.trim();
+    const code = newColorCode.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "");
+    if (!color || !code) return;
+    setVariants((current) => [...current, ...existingSizes.filter((size) => !current.some((variant) => variant.color === color && variant.size === size)).map((size) => ({ skuCode: `${style.styleNo}-${code}-${size}`.toUpperCase(), color, size, minStock: 0, active: true }))]);
+    setNewColor(""); setNewColorCode("");
+  };
+  const addSize = () => {
+    const size = newSize.trim().toUpperCase();
+    if (!size) return;
+    setVariants((current) => [...current, ...existingColors.filter((color) => !current.some((variant) => variant.color === color && variant.size === size)).map((color) => ({ skuCode: `${style.styleNo}-${colorCodeFromSkuCode(current.find((variant) => variant.color === color)?.skuCode ?? color)}-${size}`.toUpperCase(), color, size, minStock: 0, active: true }))]);
+    setNewSize("");
+  };
+  const removeColor = (color: string) => setVariants((current) => current.map((variant) => variant.color === color && variant.id ? { ...variant, active: false } : variant).filter((variant) => variant.id || variant.color !== color));
+  const removeSize = (size: string) => setVariants((current) => current.map((variant) => variant.size === size && variant.id ? { ...variant, active: false } : variant).filter((variant) => variant.id || variant.size !== size));
   return <Modal title={`维护商品 · ${style.styleNo}`} subtitle="有历史流水的规格会停用保留，不会删除记录" onClose={onClose} wide>
     <form className="edit-style-form" onSubmit={(event) => { event.preventDefault(); update.mutate(); }}>
       <div className="form-grid compact"><label>款式名称<input required value={name} onChange={(event) => setName(event.target.value)} /></label><label>品牌<input value={brand} onChange={(event) => setBrand(event.target.value)} /></label><label>品类<input value={category} onChange={(event) => setCategory(event.target.value)} /></label><label>款号<input value={style.styleNo} disabled /></label></div>
       <div className="variant-editor">
         <div className="variant-editor-head"><strong>颜色尺码规格</strong><button className="button small" type="button" onClick={addVariant}><Plus size={14} />添加规格</button></div>
-        <div className="variant-editor-columns"><span>启用</span><span>SKU 编码</span><span>颜色</span><span>尺码</span><span>预警线</span><span /></div>
+        <div className="variant-bulk-tools"><label>新增颜色<input value={newColor} onChange={(event) => setNewColor(event.target.value)} placeholder="颜色" /></label><label>颜色编号<input value={newColorCode} onChange={(event) => setNewColorCode(event.target.value)} placeholder="编号" /></label><button className="button small" type="button" disabled={!newColor.trim() || !newColorCode.trim() || !existingSizes.length} onClick={addColor}>增加颜色</button><label>新增尺码<input value={newSize} onChange={(event) => setNewSize(event.target.value)} placeholder="尺码" /></label><button className="button small" type="button" disabled={!newSize.trim() || !existingColors.length} onClick={addSize}>增加尺码</button></div>
+        <div className="variant-chip-tools"><span>颜色</span>{existingColors.map((color) => <button className="button small" type="button" key={color} onClick={() => removeColor(color)}>{color} ×</button>)}<span>尺码</span>{existingSizes.map((size) => <button className="button small" type="button" key={size} onClick={() => removeSize(size)}>{size} ×</button>)}</div>
+        <div className="variant-editor-columns"><span>启用</span><span>SKU 编码</span><span>颜色</span><span>尺码</span><span>库存预警值</span><span /></div>
         {variants.map((variant, index) => <div className={`variant-editor-row ${variant.active ? "" : "inactive"}`} key={variant.id ?? `new-${index}`}>
           <label className="toggle-cell"><input aria-label={`启用 ${variant.skuCode}`} type="checkbox" checked={variant.active} onChange={(event) => patchVariant(index, { active: event.target.checked })} /><span /></label>
           <input aria-label={`第 ${index + 1} 行 SKU 编码`} required value={variant.skuCode} onChange={(event) => patchVariant(index, { skuCode: event.target.value })} />
           <input aria-label={`第 ${index + 1} 行颜色`} required value={variant.color} onChange={(event) => patchVariant(index, { color: event.target.value })} />
           <input aria-label={`第 ${index + 1} 行尺码`} required value={variant.size} onChange={(event) => patchVariant(index, { size: event.target.value })} />
-          <input aria-label={`第 ${index + 1} 行预警线`} type="number" min="0" value={variant.minStock} onChange={(event) => patchVariant(index, { minStock: Number(event.target.value) })} />
+          <input aria-label={`第 ${index + 1} 行库存预警值`} type="number" min="0" value={variant.minStock} onChange={(event) => patchVariant(index, { minStock: Number(event.target.value) })} />
           {!variant.id ? <button className="icon-button danger" type="button" aria-label={`删除第 ${index + 1} 行规格`} onClick={() => setVariants((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={15} /></button> : <span />}
         </div>)}
       </div>
@@ -428,12 +502,13 @@ function CreateStyleModal({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [brand, setBrand] = useState("");
   const [category, setCategory] = useState("");
-  const [colors, setColors] = useState("黑色,白色");
+  const [colors, setColors] = useState([{ alias: "黑色", code: "BK" }, { alias: "白色", code: "WH" }]);
   const [sizes, setSizes] = useState("S,M,L,XL");
-  const colorList = splitList(colors);
+  const colorList = colors.map((color) => ({ alias: color.alias.trim(), code: color.code.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "") })).filter((color) => color.alias && color.code);
   const sizeList = splitList(sizes);
+  const patchColor = (index: number, patch: Partial<{ alias: string; code: string }>) => setColors((current) => current.map((color, itemIndex) => itemIndex === index ? { ...color, ...patch } : color));
   const create = useMutation({
-    mutationFn: () => api("/catalog/styles", { method: "POST", body: jsonBody({ styleNo, name, brand: brand || null, category: category || null, attributes: {}, variants: colorList.flatMap((color, colorIndex) => sizeList.map((size) => ({ skuCode: `${styleNo}-${String(colorIndex + 1).padStart(2, "0")}-${size}`.toUpperCase(), color, size, minStock: 0 }))) }) }),
+    mutationFn: () => api("/catalog/styles", { method: "POST", body: jsonBody({ styleNo, name, brand: brand || null, category: category || null, attributes: {}, variants: colorList.flatMap((color) => sizeList.map((size) => ({ skuCode: `${styleNo}-${color.code}-${size}`.toUpperCase(), color: color.alias, size, minStock: 0 }))) }) }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["styles"] }); queryClient.invalidateQueries({ queryKey: ["inventory"] }); emitToast("款式及 SKU 已创建"); onClose(); },
   });
   return (
@@ -443,9 +518,12 @@ function CreateStyleModal({ onClose }: { onClose: () => void }) {
         <label>款式名称<input required value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 宽松落肩卫衣" /></label>
         <label>品牌<input value={brand} onChange={(event) => setBrand(event.target.value)} /></label>
         <label>品类<input value={category} onChange={(event) => setCategory(event.target.value)} /></label>
-        <label className="span-2">颜色（逗号分隔）<input required value={colors} onChange={(event) => setColors(event.target.value)} /></label>
+        <div className="span-2 color-code-editor">
+          <div className="color-code-head"><strong>颜色</strong><button className="button small" type="button" onClick={() => setColors((current) => [...current, { alias: "", code: "" }])}><Plus size={14} />添加颜色</button></div>
+          {colors.map((color, index) => <div className="color-code-row" key={index}><label>颜色别称<input required value={color.alias} onChange={(event) => patchColor(index, { alias: event.target.value })} placeholder="例如 曜石黑" /></label><label>颜色编号<input required value={color.code} onChange={(event) => patchColor(index, { code: event.target.value })} placeholder="例如 BK" /></label><button className="icon-button danger" type="button" aria-label="删除颜色" disabled={colors.length === 1} onClick={() => setColors((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={15} /></button></div>)}
+        </div>
         <label className="span-2">尺码（逗号分隔）<input required value={sizes} onChange={(event) => setSizes(event.target.value)} /></label>
-        <div className="span-2 variant-count"><SlidersHorizontal size={16} /><span>将生成 <strong>{colorList.length * sizeList.length}</strong> 个 SKU</span><div>{colorList.map((color, index) => <span key={color}><i className={`swatch swatch-${index % 4}`} />{color}</span>)}</div></div>
+        <div className="span-2 variant-count"><SlidersHorizontal size={16} /><span>将生成 <strong>{colorList.length * sizeList.length}</strong> 个 SKU</span><div>{colorList.map((color, index) => <span key={color.code}><i className={`swatch swatch-${index % 4}`} />{color.alias}<small>{color.code}</small></span>)}</div></div>
         {create.error && <ErrorBanner>{errorText(create.error)}</ErrorBanner>}
         <ModalActions onClose={onClose} pending={create.isPending} submitLabel="创建款式" />
       </form>
@@ -469,8 +547,8 @@ function DocumentsPage({ user }: { user: User }) {
   return (
     <>
       <PageHeader eyebrow="库存单据" title={typeLabels[normalizedType]} description={documentDescription(normalizedType)} action={<div className="page-actions">{normalizedType === "INBOUND" && <button className="button" onClick={() => setSimpleImportOpen(true)}><Upload size={16} />导入并入库</button>}{(normalizedType === "INBOUND" || normalizedType === "OUTBOUND") ? <Link className="button primary" to={`/documents/new?type=${normalizedType}`}><Plus size={17} />新建{typeLabels[normalizedType]}单</Link> : <button className="button primary" onClick={() => setCreateOpen(true)}><Plus size={17} />新建{typeLabels[normalizedType]}单</button>}</div>} />
-      <div className="document-tabs">{Object.entries(typeLabels).map(([value, label]) => <Link key={value} className={value === normalizedType ? "active" : ""} to={`/documents/${value}`}>{label}</Link>)}</div>
-      <DataTable loading={documents.isLoading} empty={!(documents.data?.length)} headers={["单号", "来源 / 往来方", "行数 / 数量", "状态", "制单人", "时间", "操作"]}>
+      <div className="document-tabs">{[["INBOUND", "入库"], ["OUTBOUND", "出库"]].map(([value, label]) => <Link key={value} className={value === normalizedType ? "active" : ""} to={`/documents/${value}`}>{label}</Link>)}</div>
+      <DataTable loading={documents.isLoading} empty={!(documents.data?.length)} emptyState={<DocumentEmptyState type={normalizedType} onSimpleImport={() => setSimpleImportOpen(true)} onCreateLegacy={() => setCreateOpen(true)} />} headers={["单号", "来源 / 往来方", "行数 / 数量", "状态", "制单人", "时间", "操作"]}>
         {documents.data?.map((document) => (
           <DocumentRows key={document.id} document={document} expanded={expanded === document.id} onToggle={() => setExpanded(expanded === document.id ? null : document.id)} onAction={(name) => action.mutate({ document, name })} canReverse={can(user, "inventory.adjust")} />
         ))}
@@ -479,6 +557,12 @@ function DocumentsPage({ user }: { user: User }) {
       {simpleImportOpen && <SimpleImportDialog kind="INBOUND" onClose={() => setSimpleImportOpen(false)} onConfirmed={() => { queryClient.invalidateQueries({ queryKey: ["documents"] }); queryClient.invalidateQueries({ queryKey: ["inventory"] }); queryClient.invalidateQueries({ queryKey: ["dashboard"] }); }} />}
     </>
   );
+}
+
+function DocumentEmptyState({ type, onSimpleImport, onCreateLegacy }: { type: string; onSimpleImport: () => void; onCreateLegacy: () => void }) {
+  if (type === "INBOUND") return <EmptyState icon={<ArrowDownToLine />} title="还没有入库单" description="手工录入到货矩阵，或直接导入供应商表格并确认入库。" action={<div className="empty-actions"><button className="button" onClick={onSimpleImport}><Upload size={16} />导入并入库</button><Link className="button primary" to="/documents/new?type=INBOUND"><Plus size={17} />新建入库单</Link></div>} />;
+  if (type === "OUTBOUND") return <EmptyState icon={<ArrowUpFromLine />} title="还没有出库单" description="从订单或发货明细新建出库单，预览通过后会扣减可用库存。" action={<Link className="button primary" to="/documents/new?type=OUTBOUND"><Plus size={17} />新建出库单</Link>} />;
+  return <EmptyState icon={<ClipboardList />} title={`还没有${typeLabels[type]}单`} description="这类单据保存后会先进入草稿或审批流程，不会绕过库存校验。" action={<button className="button primary" onClick={onCreateLegacy}><Plus size={17} />新建{typeLabels[type]}单</button>} />;
 }
 
 function DocumentRows({ document, expanded, onToggle, onAction, canReverse }: { document: StockDocument; expanded: boolean; onToggle: () => void; onAction: (name: string) => void; canReverse: boolean }) {
@@ -524,6 +608,41 @@ function CreateDocumentModal({ type, onClose }: { type: string; onClose: () => v
   );
 }
 
+type AiChatAction = { type: "create_inbound_draft"; warehouseId: string; lines: Array<{ skuId: string; skuCode: string; styleNo: string; color: string; size: string; quantity: number }> };
+type AiChatPreview = { action: AiChatAction; previewToken: string; rows: Array<{ skuId: string; skuCode: string; styleNo: string; color: string; size: string; quantity: number; currentOnHand: number; projectedOnHand: number; errors: string[]; warnings: string[] }>; totals: { quantity: number; delta: number }; valid: boolean; expiresAt: string };
+type AiChatMessage = { role: "user" | "assistant"; text: string; action?: AiChatAction | null; preview?: AiChatPreview | null };
+
+function AiChatPage({ user }: { user: User }) {
+  const queryClient = useQueryClient();
+  const [input, setInput] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [kind, setKind] = useState("INBOUND");
+  const [selectedJob, setSelectedJob] = useState<string | null>(null);
+  const [accepted, setAccepted] = useState<string[]>([]);
+  const [autoSelectedJob, setAutoSelectedJob] = useState<string | null>(null);
+  const [importPreview, setImportPreview] = useState<any | null>(null);
+  const [messages, setMessages] = useState<AiChatMessage[]>([{ role: "assistant", text: "你好，我可以按你的账号权限查询库存。你也可以在下方上传截图、图片、PDF 或表格，我会识别内容并生成待确认草稿。" }]);
+  const detail = useQuery({ queryKey: ["ai-chat-import", selectedJob], queryFn: () => api<ImportJob>(`/imports/${selectedJob}`), enabled: Boolean(selectedJob), refetchInterval: (query) => ["QUEUED", "PROCESSING"].includes(query.state.data?.status ?? "") ? 2000 : false });
+  const send = useMutation({ mutationFn: (message: string) => api<{ reply: string; action: AiChatAction | null }>("/ai/chat", { method: "POST", body: jsonBody({ message }) }), onSuccess: (result) => setMessages((current) => [...current, { role: "assistant", text: result.reply, action: result.action }]), onError: (error) => setMessages((current) => [...current, { role: "assistant", text: errorText(error) }]) });
+  const upload = useMutation({ mutationFn: () => { const body = new FormData(); body.set("file", file!); body.set("kind", kind); return api<{ job_id: string }>("/imports", { method: "POST", body }); }, onSuccess: (result) => { setSelectedJob(result.job_id); setAccepted([]); setImportPreview(null); setMessages((current) => [...current, { role: "user", text: `已上传文件：${file?.name ?? "附件"}` }, { role: "assistant", text: "文件已进入 AI 识别队列。识别完成后先调用系统工具预览，不会直接创建单据或修改库存。" }]); setFile(null); emitToast("附件已进入 AI 识别队列"); }, onError: (error) => setMessages((current) => [...current, { role: "assistant", text: errorText(error) }]) });
+  const setAcceptedRows = (next: string[]) => { setAccepted(next); setImportPreview(null); };
+  const selectedImportRows = () => (detail.data?.rows ?? []).filter((row) => accepted.includes(row.id) && !row.validationErrors.length && row.skuId);
+  const importPayload = () => ({ warehouseId: detail.data!.warehouseId, type: detail.data!.kind === "OUTBOUND" ? "OUTBOUND" : "INBOUND", sourceRef: `AI-${detail.data!.id}`, counterparty: null, reason: `AI 识别文件 ${detail.data!.fileName}`, lines: selectedImportRows().map((row) => ({ skuId: row.skuId!, stockStatus: "SELLABLE", quantity: Number(row.normalized.quantity ?? row.normalized.countedPieces), note: null })) });
+  const previewImport = useMutation({ mutationFn: () => api<any>("/documents/preview", { method: "POST", body: jsonBody(importPayload()) }), onSuccess: (result) => { setImportPreview(result); setMessages((current) => [...current, { role: "assistant", text: `系统预览完成：${result.rows.length} 行，共 ${result.totals.quantity} 件。请检查当前库存和预览后库存，确认无误后再${result.type === "INBOUND" ? "入库" : "提交"}。` }]); }, onError: (error) => setMessages((current) => [...current, { role: "assistant", text: errorText(error) }]) });
+  const confirmImport = useMutation({ mutationFn: async () => { if (!importPreview?.valid) throw new Error("预览未通过，不能提交"); const draft = await api<StockDocument>("/documents/drafts", { method: "POST", headers: { "Idempotency-Key": `ai-import-draft-${selectedJob}` }, body: jsonBody(importPayload()) }); return api<StockDocument>(`/documents/${draft.id}/commit`, { method: "POST", headers: { "Idempotency-Key": `ai-import-commit-${selectedJob}` }, body: jsonBody({ previewToken: importPreview.previewToken }) }); }, onSuccess: (document) => { queryClient.invalidateQueries({ queryKey: ["imports"] }); queryClient.invalidateQueries({ queryKey: ["documents"] }); queryClient.invalidateQueries({ queryKey: ["inventory"] }); queryClient.invalidateQueries({ queryKey: ["dashboard"] }); setSelectedJob(null); setAccepted([]); setImportPreview(null); setMessages((current) => [...current, { role: "assistant", text: `${document.documentNo} 已确认并完成${document.type === "INBOUND" ? "入库" : "提交"}，库存账已更新。` }]); emitToast("AI 识别单据已入库"); }, onError: (error) => setMessages((current) => [...current, { role: "assistant", text: errorText(error) }]) });
+  const previewAction = useMutation({ mutationFn: (action: AiChatAction) => api<AiChatPreview>("/ai/chat/preview", { method: "POST", body: jsonBody({ action }) }), onSuccess: (preview, action) => setMessages((current) => current.map((message) => message.action === action ? { ...message, action: null, preview } : message)), onError: (error) => setMessages((current) => [...current, { role: "assistant", text: errorText(error) }]) });
+  const confirm = useMutation({ mutationFn: (preview: AiChatPreview) => api<StockDocument>("/ai/chat/confirm-draft", { method: "POST", body: jsonBody({ preview }) }), onSuccess: (document) => { queryClient.invalidateQueries({ queryKey: ["documents"] }); setMessages((current) => [...current, { role: "assistant", text: `已创建入库草稿 ${document.documentNo}，库存尚未改变，请到单据页预览并提交。` }]); emitToast("AI 入库草稿已创建"); }, onError: (error) => emitToast(errorText(error), "error") });
+  const submit = () => { const message = input.trim(); if (!message || send.isPending) return; setMessages((current) => [...current, { role: "user", text: message }]); setInput(""); send.mutate(message); };
+  const validRows = detail.data?.rows?.filter((row) => row.validationErrors.length === 0) ?? [];
+  useEffect(() => {
+    if (detail.data?.status === "REVIEW" && selectedJob && autoSelectedJob !== selectedJob) {
+      setAccepted(validRows.map((row) => row.id));
+      setAutoSelectedJob(selectedJob);
+    }
+  }, [detail.data?.status, selectedJob, autoSelectedJob, validRows]);
+  return <><PageHeader eyebrow="权限感知助手" title="AI 仓库助手" description="文字、截图和业务文件都可以直接发给 AI；识别与生成只产生待确认草稿，不会直接落账。" /><section className="ai-chat-layout"><div className="ai-chat-permissions"><ShieldCheck size={18} /><span><strong>{user.role.name}</strong><small>{can(user, "inventory.view") ? "可查询库存" : "不可查询库存"} · {can(user, "documents.manage") ? "可创建入库草稿" : "不可创建入库草稿"} · {can(user, "imports.manage") ? "可上传识别文件" : "不可上传识别文件"}</small></span></div><div className="ai-chat-messages">{messages.map((message, index) => <div key={index} className={`ai-chat-message ${message.role}`}><span>{message.text}</span>{message.action && <div className="ai-chat-action"><strong>待预览入库草稿</strong><small>{message.action.lines.map((line) => `${line.styleNo} ${line.color}/${line.size} +${line.quantity}`).join("；")}</small><button className="button primary small" disabled={previewAction.isPending} onClick={() => previewAction.mutate(message.action!)}>{previewAction.isPending ? "正在预览" : "先预览并排序"}</button></div>}{message.preview && <div className="ai-chat-action"><strong>预览已完成 · 共 {message.preview.totals.quantity} 件</strong><small>{message.preview.rows.map((row) => `${row.styleNo} ${row.color}/${row.size} +${row.quantity}，预览后 ${row.projectedOnHand}`).join("；")}</small>{message.preview.rows.some((row) => row.warnings.length > 0) && <small>提示：{message.preview.rows.flatMap((row) => row.warnings).join("；")}</small>}<button className="button primary small" disabled={!message.preview.valid || confirm.isPending} onClick={() => confirm.mutate(message.preview!)}>{confirm.isPending ? "正在创建" : "确认无误后创建草稿"}</button></div>}</div>)}{send.isPending && <div className="ai-chat-message assistant"><span>正在读取授权范围内的库存并分析…</span></div>}{selectedJob && <div className="ai-chat-import-result">{detail.isLoading || ["QUEUED", "PROCESSING"].includes(detail.data?.status ?? "") ? <><RefreshCw className="spin" size={16} /><span>{statusLabels[detail.data?.status ?? "QUEUED"] ?? "正在解析"} · {detail.data?.progress ?? 0}%</span></> : detail.data?.status !== "REVIEW" ? <><strong>{statusLabels[detail.data?.status ?? ""] ?? "解析失败"}</strong><span>{detail.data?.error ?? "没有可确认的识别结果"}</span></> : <><div className="ai-chat-import-head"><strong>识别结果 · {detail.data.fileName}</strong><span>{accepted.length} / {validRows.length} 行已选择</span></div><label className="ai-chat-select-all"><input type="checkbox" checked={validRows.length > 0 && accepted.length === validRows.length} onChange={(event) => setAcceptedRows(event.target.checked ? validRows.map((row) => row.id) : [])} />选择全部有效行</label><div className="ai-chat-import-table"><table><thead><tr><th>选</th><th>SKU</th><th>款号 / 颜色 / 尺码</th><th>数量</th><th>校验</th></tr></thead><tbody>{detail.data.rows?.map((row) => <tr key={row.id}><td><input type="checkbox" disabled={row.validationErrors.length > 0} checked={accepted.includes(row.id)} onChange={(event) => setAcceptedRows((event.target.checked ? [...accepted, row.id] : accepted.filter((id) => id !== row.id)))} /></td><td className="mono">{String(row.normalized.skuCode ?? "-")}</td><td>{[row.normalized.styleNo, row.normalized.color, row.normalized.size].filter(Boolean).map(String).join(" / ") || "-"}</td><td>{String(row.normalized.quantity ?? row.normalized.countedPieces ?? "-")}</td><td>{row.validationErrors.length ? <span className="alert-label"><AlertTriangle size={13} />需修正</span> : <span className="ok-label"><Check size={13} />通过</span>}</td></tr>)}</tbody></table></div><button className="button primary small" disabled={!accepted.length || previewImport.isPending} onClick={() => previewImport.mutate()}><ClipboardCheck size={14} />{previewImport.isPending ? "正在预览" : "调用工具预览"}</button>{importPreview && <div className="ai-chat-system-preview"><div className={`goods-order-preview-issues ${importPreview.valid ? "valid" : "invalid"}`}><div><strong>{importPreview.valid ? "系统校验通过" : "系统校验未通过"}</strong><small>{importPreview.rows.length} 行 · {importPreview.totals.quantity} 件 · 预览令牌有效至 {formatDate(importPreview.expiresAt)}</small></div></div><div className="ai-chat-import-table"><table><thead><tr><th>SKU</th><th>款号 / 颜色 / 尺码</th><th>当前库存</th><th>本次变化</th><th>预览后库存</th><th>提示</th></tr></thead><tbody>{importPreview.rows.map((row: any) => <tr key={row.skuId}><td className="mono">{row.skuCode}</td><td>{row.styleNo} / {row.color} / {row.size}</td><td>{row.currentOnHand}</td><td className={row.delta >= 0 ? "positive" : "negative"}>{signed(row.delta)}</td><td>{row.projectedOnHand}</td><td>{row.errors.length ? <span className="alert-label">{row.errors.join("；")}</span> : row.warnings.length ? <span className="alert-label">{row.warnings.join("；")}</span> : <span className="ok-label"><Check size={13} />正常</span>}</td></tr>)}</tbody></table></div><button className="button primary small" disabled={!importPreview.valid || confirmImport.isPending} onClick={() => window.confirm(`已确认预览无误，确定${importPreview.type === "INBOUND" ? "入库并更新库存" : "提交并更新库存"}吗？`) && confirmImport.mutate()}><PackageCheck size={14} />{confirmImport.isPending ? "正在入库" : "确认无误，执行入库"}</button></div>}</>}</div>}</div><form className="ai-chat-input" onSubmit={(event) => { event.preventDefault(); submit(); }}><div className="ai-chat-compose"><textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="输入问题，或先上传附件再补充说明" rows={3} /><div className="ai-chat-attachment"><label className={`ai-chat-file ${file ? "has-file" : ""}`} title="上传截图、图片、PDF 或表格"><Upload size={16} /><span>{file ? file.name : "添加附件"}</span><input type="file" accept=".xlsx,.xls,.csv,.pdf,.jpg,.jpeg,.png,.webp" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label><select value={kind} onChange={(event) => setKind(event.target.value)} aria-label="附件识别类型"><option value="INBOUND">入库识别</option><option value="OUTBOUND">出库识别</option></select>{file && <button type="button" className="icon-button danger" title="移除附件" onClick={() => setFile(null)}><X size={15} /></button>}</div></div><button className="button primary" type={file && can(user, "imports.manage") ? "button" : "submit"} disabled={(file ? upload.isPending || !can(user, "imports.manage") : !input.trim() || send.isPending)} onClick={() => file && can(user, "imports.manage") && upload.mutate()}><Sparkles size={16} />{file ? (upload.isPending ? "正在上传" : "发送附件") : "发送"}</button></form></section></>;
+}
+
 function ImportsPage() {
   const queryClient = useQueryClient();
   const [file, setFile] = useState<File | null>(null);
@@ -531,6 +650,7 @@ function ImportsPage() {
   const [sourceName, setSourceName] = useState("");
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
   const [accepted, setAccepted] = useState<string[]>([]);
+  const setAcceptedRows = (next: string[]) => setAccepted(next);
   const jobs = useQuery({ queryKey: ["imports"], queryFn: () => api<ImportJob[]>("/imports"), refetchInterval: (query) => query.state.data?.some((job) => ["QUEUED", "PROCESSING"].includes(job.status)) ? 2000 : false });
   const detail = useQuery({ queryKey: ["import", selectedJob], queryFn: () => api<ImportJob>(`/imports/${selectedJob}`), enabled: Boolean(selectedJob), refetchInterval: (query) => ["QUEUED", "PROCESSING"].includes(query.state.data?.status ?? "") ? 2000 : false });
   const upload = useMutation({
@@ -538,22 +658,23 @@ function ImportsPage() {
     onSuccess: (result) => { setSelectedJob(result.job_id); setFile(null); queryClient.invalidateQueries({ queryKey: ["imports"] }); emitToast("文件已进入安全解析队列"); },
   });
   const confirm = useMutation({ mutationFn: () => api(`/imports/${selectedJob}/confirm`, { method: "POST", body: jsonBody({ acceptedRowIds: accepted }) }), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["imports"] }); queryClient.invalidateQueries({ queryKey: ["styles"] }); queryClient.invalidateQueries({ queryKey: ["documents"] }); emitToast("已生成系统草稿，库存尚未改变"); setSelectedJob(null); }, onError: (error) => emitToast(errorText(error), "error") });
+  const remove = useMutation({ mutationFn: (job: ImportJob) => api(`/imports/${job.id}`, { method: "DELETE" }), onSuccess: (_, job) => { if (selectedJob === job.id) setSelectedJob(null); queryClient.invalidateQueries({ queryKey: ["imports"] }); emitToast("错误导入已删除"); }, onError: (error) => emitToast(errorText(error), "error") });
   const validRows = detail.data?.rows?.filter((row) => row.validationErrors.length === 0) ?? [];
   return (
     <>
-      <PageHeader eyebrow="可信 AI 流程" title="AI 导入" description="AI 只识别和映射，人工确认后生成草稿，过账前库存始终不变。" />
+      <PageHeader eyebrow="可信 AI 流程" title="AI 导入" description="上传图片、PDF 或表格，AI 按当前新建表单的颜色尺码格式识别，人工确认后生成草稿。" />
       <section className="import-layout">
         <form className="upload-panel" onSubmit={(event) => { event.preventDefault(); if (file) upload.mutate(); }}>
           <div className="upload-icon"><Upload size={24} /></div><div><h2>上传业务文件</h2><p>Excel / CSV 最多 50,000 行；PDF 最多 25 页；单文件不超过 50MB。</p></div>
-          <div className="upload-fields"><label>导入内容<select value={kind} onChange={(event) => setKind(event.target.value)}><option value="CATALOG">商品资料</option><option value="INBOUND">入库单</option><option value="OUTBOUND">出库订单</option><option value="STOCKTAKE">盘点单</option></select></label><label>来源模板名<input value={sourceName} onChange={(event) => setSourceName(event.target.value)} placeholder="例如：某供应商月表" /></label></div>
+          <div className="upload-fields"><label>导入内容<select value={kind === "CATALOG" || kind === "STOCKTAKE" ? "INBOUND" : kind} onChange={(event) => setKind(event.target.value)}><option value="INBOUND">入库表单</option><option value="OUTBOUND">出库表单</option></select></label><label>供应商 / 来源<input value={sourceName} onChange={(event) => setSourceName(event.target.value)} placeholder="例如：某供应商月表" /></label></div>
           <label className={`file-drop ${file ? "has-file" : ""}`}><input type="file" accept=".xlsx,.xls,.csv,.pdf,.jpg,.jpeg,.png,.webp" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><FileSpreadsheet size={20} /><span>{file ? file.name : "选择文件或拖放到这里"}</span><small>{file ? formatBytes(file.size) : "外部内容将被作为不可信数据隔离处理"}</small></label>
           {upload.error && <ErrorBanner>{errorText(upload.error)}</ErrorBanner>}
           <button className="button primary" disabled={!file || upload.isPending}><Sparkles size={17} />{upload.isPending ? "正在上传" : "开始 AI 解析"}</button>
         </form>
-        <div className="import-history"><SectionHeading title="导入任务" meta={`${jobs.data?.length ?? 0} 条`} />{!jobs.data?.length ? <EmptyState icon={<FileClock />} title="暂无导入任务" description="上传文件后，解析进度会显示在这里。" /> : jobs.data.map((job) => <button key={job.id} className={`job-row ${selectedJob === job.id ? "active" : ""}`} onClick={() => { setSelectedJob(job.id); setAccepted([]); }}><span className="job-file"><FileSpreadsheet size={17} /></span><span><strong>{job.fileName}</strong><small>{typeLabels[job.kind] ?? "商品资料"} · {formatDate(job.createdAt)}</small></span><StatusBadge status={job.status} /></button>)}</div>
+        <div className="import-history"><SectionHeading title="导入任务" meta={`${jobs.data?.length ?? 0} 条`} />{!jobs.data?.length ? <EmptyState icon={<FileClock />} title="暂无导入任务" description="上传文件后，解析进度会显示在这里。" /> : jobs.data.map((job) => <div key={job.id} className={`job-row ${selectedJob === job.id ? "active" : ""}`}><button className="job-main" onClick={() => { setSelectedJob(job.id); setAccepted([]); }}><span className="job-file"><FileSpreadsheet size={17} /></span><span><strong>{job.fileName}</strong><small>{typeLabels[job.kind] ?? "商品资料"} · {formatDate(job.createdAt)}</small></span><StatusBadge status={job.status} /></button>{!job.appliedDocumentId && job.status !== "COMPLETED" && <button className="icon-button danger" title="删除错误导入" disabled={remove.isPending} onClick={() => window.confirm(`确定删除导入任务 ${job.fileName} 吗？`) && remove.mutate(job)}><Trash2 size={15} /></button>}</div>)}</div>
       </section>
       {selectedJob && <Modal title="导入结果确认" subtitle={detail.data?.fileName ?? "正在读取任务"} onClose={() => setSelectedJob(null)} wide>
-        {detail.isLoading ? <PageLoading /> : detail.data?.status !== "REVIEW" ? <div className="job-progress"><RefreshCw className={detail.data?.status === "PROCESSING" ? "spin" : ""} /><strong>{statusLabels[detail.data?.status ?? ""] ?? detail.data?.status}</strong><progress value={detail.data?.progress ?? 0} max="100" /><p>{detail.data?.error}</p></div> : <><div className="review-toolbar"><label><input type="checkbox" checked={validRows.length > 0 && accepted.length === validRows.length} onChange={(event) => setAccepted(event.target.checked ? validRows.map((row) => row.id) : [])} />选择全部有效行</label><span>{accepted.length} / {validRows.length} 行待确认</span></div><div className="review-table"><table><thead><tr><th>选择</th><th>行</th><th>SKU</th><th>款号 / 颜色 / 尺码</th><th>数量</th><th>置信度</th><th>校验</th></tr></thead><tbody>{detail.data.rows?.map((row) => <tr key={row.id} className={row.validationErrors.length ? "invalid" : ""}><td><input type="checkbox" disabled={row.validationErrors.length > 0} checked={accepted.includes(row.id)} onChange={(event) => setAccepted((current) => event.target.checked ? [...current, row.id] : current.filter((id) => id !== row.id))} /></td><td>{row.rowNumber}</td><td className="mono">{String(row.normalized.skuCode ?? "-")}</td><td>{[row.normalized.styleNo, row.normalized.color, row.normalized.size].filter(Boolean).map(String).join(" / ") || "-"}</td><td>{String(row.normalized.quantity ?? row.normalized.countedPieces ?? "-")}</td><td><Confidence value={row.confidence} /></td><td>{row.validationErrors.length ? <span className="alert-label"><AlertTriangle size={13} />{row.validationErrors.join("；")}</span> : <span className="ok-label"><Check size={13} />通过</span>}</td></tr>)}</tbody></table></div><div className="modal-actions"><button className="button" onClick={() => setSelectedJob(null)}>稍后处理</button><button className="button primary" disabled={!accepted.length || confirm.isPending} onClick={() => confirm.mutate()}><Check size={16} />确认并生成草稿</button></div></>}
+        {detail.isLoading ? <PageLoading /> : detail.data?.status !== "REVIEW" ? <div className="job-progress"><RefreshCw className={detail.data?.status === "PROCESSING" ? "spin" : ""} /><strong>{statusLabels[detail.data?.status ?? ""] ?? detail.data?.status}</strong><progress value={detail.data?.progress ?? 0} max="100" /><p>{detail.data?.error}</p></div> : <><div className="review-toolbar"><label><input type="checkbox" checked={validRows.length > 0 && accepted.length === validRows.length} onChange={(event) => setAcceptedRows(event.target.checked ? validRows.map((row) => row.id) : [])} />选择全部有效行</label><span>{accepted.length} / {validRows.length} 行待确认</span></div><div className="review-table"><table><thead><tr><th>选择</th><th>行</th><th>SKU</th><th>款号 / 颜色 / 尺码</th><th>数量</th><th>置信度</th><th>校验</th></tr></thead><tbody>{detail.data.rows?.map((row) => <tr key={row.id} className={row.validationErrors.length ? "invalid" : ""}><td><input type="checkbox" disabled={row.validationErrors.length > 0} checked={accepted.includes(row.id)} onChange={(event) => setAcceptedRows((event.target.checked ? [...accepted, row.id] : accepted.filter((id) => id !== row.id)))} /></td><td>{row.rowNumber}</td><td className="mono">{String(row.normalized.skuCode ?? "-")}</td><td>{[row.normalized.styleNo, row.normalized.color, row.normalized.size].filter(Boolean).map(String).join(" / ") || "-"}</td><td>{String(row.normalized.quantity ?? row.normalized.countedPieces ?? "-")}</td><td><Confidence value={row.confidence} /></td><td>{row.validationErrors.length ? <span className="alert-label"><AlertTriangle size={13} />{row.validationErrors.join("；")}</span> : <span className="ok-label"><Check size={13} />通过</span>}</td></tr>)}</tbody></table></div><div className="modal-actions"><button className="button" onClick={() => setSelectedJob(null)}>稍后处理</button><button className="button primary" disabled={!accepted.length || confirm.isPending} onClick={() => confirm.mutate()}><Check size={16} />确认并生成草稿</button></div></>}
       </Modal>}
     </>
   );
@@ -561,14 +682,23 @@ function ImportsPage() {
 
 function ReportsPage() {
   const queryClient = useQueryClient();
+  const reportTemplates = [
+    { label: "库存余额表", dataset: "inventory", prompt: "导出库存余额表，包含款号、品名、SKU、颜色、尺码、在库、预留、可用和预警值" },
+    { label: "低库存预警表", dataset: "alerts", prompt: "导出低库存预警表，按可用库存从低到高排序" },
+    { label: "商品 SKU 明细", dataset: "inventory", prompt: "导出商品 SKU 明细表，按款号、颜色和尺码分组" },
+    { label: "日出库汇总", dataset: "documents", prompt: "导出今天的出库单据汇总，包含单号、客户、行数和时间" },
+    { label: "审计日志", dataset: "audit", prompt: "导出关键操作审计日志，按时间倒序排列" },
+  ];
   const [prompt, setPrompt] = useState("导出当前全部可用库存，按款号和颜色查看");
+  const [dataset, setDataset] = useState("inventory");
   const [format, setFormat] = useState("xlsx");
   const jobs = useQuery({ queryKey: ["exports"], queryFn: () => api<ExportJob[]>("/exports"), refetchInterval: (query) => query.state.data?.some((job) => ["QUEUED", "PROCESSING"].includes(job.status)) ? 2000 : false });
-  const create = useMutation({ mutationFn: () => api<{ job_id: string }>("/exports", { method: "POST", body: jsonBody({ prompt, format }) }), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["exports"] }); emitToast("报表已进入生成队列"); } });
+  const create = useMutation({ mutationFn: () => api<{ job_id: string }>("/exports", { method: "POST", body: jsonBody({ prompt, dataset, format }) }), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["exports"] }); emitToast("报表已进入生成队列"); } });
   return (
     <>
       <PageHeader eyebrow="受限报表引擎" title="AI 导出" description="用自然语言描述口径，系统只会查询允许的数据集与字段。" />
-      <section className="report-composer"><div className="report-prompt"><Sparkles size={20} /><textarea aria-label="报表需求" value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={3} /><div className="prompt-actions"><Segmented value={format} options={[{ value: "xlsx", label: "Excel" }, { value: "csv", label: "CSV" }, { value: "pdf", label: "PDF" }]} onChange={setFormat} /><button className="button primary" onClick={() => create.mutate()} disabled={create.isPending || prompt.length < 2}><Download size={16} />生成报表</button></div></div><div className="report-guard"><ShieldCheck size={23} /><div><strong>查询边界已锁定</strong><p>AI 不能执行 SQL，也不能访问库存、流水、单据、预警和审计以外的数据。</p></div></div></section>
+      <div className="report-template-strip">{reportTemplates.map((template) => <button className="button small" key={template.label} onClick={() => { setPrompt(template.prompt); setDataset(template.dataset); }}>{template.label}</button>)}</div>
+      <section className="report-composer"><div className="report-prompt"><Sparkles size={20} /><textarea aria-label="报表需求" value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={3} /><div className="prompt-actions"><label className="report-select">导出内容<select value={dataset} onChange={(event) => setDataset(event.target.value)}><option value="inventory">库存</option><option value="ledger">库存流水</option><option value="documents">单据</option><option value="alerts">库存预警</option><option value="audit">审计记录</option></select></label><Segmented value={format} options={[{ value: "xlsx", label: "Excel" }, { value: "csv", label: "CSV" }, { value: "pdf", label: "PDF" }]} onChange={setFormat} /><button className="button primary" onClick={() => create.mutate()} disabled={create.isPending || prompt.length < 2}><Download size={16} />生成报表</button></div></div><div className="report-guard"><ShieldCheck size={23} /><div><strong>查询边界已锁定</strong><p>AI 不能执行 SQL，也不能访问库存、流水、单据、预警和审计以外的数据。</p></div></div></section>
       {create.error && <ErrorBanner>{errorText(create.error)}</ErrorBanner>}
       <div className="section-block"><SectionHeading title="导出记录" meta="文件保留 7 天" /><DataTable loading={jobs.isLoading} empty={!(jobs.data?.length)} headers={["需求", "格式", "状态", "进度", "生成时间", "操作"]}>{jobs.data?.map((job) => <tr key={job.id}><td><strong>{job.prompt}</strong><small>{job.error}</small></td><td className="mono">{job.format.toUpperCase()}</td><td><StatusBadge status={job.status} /></td><td><progress value={job.progress} max="100" /></td><td>{formatDate(job.createdAt)}</td><td>{job.status === "COMPLETED" && <button className="button small" onClick={() => downloadExport(job.id)}><Download size={14} />下载</button>}</td></tr>)}</DataTable></div>
     </>
@@ -585,16 +715,29 @@ function ApprovalsPage() {
 }
 
 function AuditPage() {
+  const [keyword, setKeyword] = useState("");
+  const [actionFilter, setActionFilter] = useState("all");
   const events = useQuery({ queryKey: ["audit"], queryFn: () => api<AuditEvent[]>("/audit") });
-  return <><PageHeader eyebrow="不可变记录" title="审计日志" description="关键业务操作的人员、对象、时间与来源地址。" /><DataTable loading={events.isLoading} empty={!(events.data?.length)} headers={["时间", "操作", "对象", "对象 ID", "操作人", "来源 IP"]}>{events.data?.map((event) => <tr key={event.id}><td>{formatDate(event.createdAt)}</td><td><span className="audit-action">{auditLabel(event.action)}</span></td><td>{event.entityType}</td><td className="mono truncate">{event.entityId}</td><td><strong>{event.actor.name}</strong><small>{event.actor.email}</small></td><td className="mono">{event.ip || "-"}</td></tr>)}</DataTable></>;
+  const actions = [...new Set((events.data ?? []).map((event) => event.action))];
+  const filtered = (events.data ?? []).filter((event) => (actionFilter === "all" || event.action === actionFilter) && `${auditLabel(event.action)} ${event.entityType} ${event.entityId} ${event.actor.name} ${event.actor.email}`.toLowerCase().includes(keyword.trim().toLowerCase()));
+  return <><PageHeader eyebrow="不可变记录" title="审计日志" description="关键业务操作的人员、对象、时间与来源地址。" /><Toolbar><form className="search-box" onSubmit={(event) => event.preventDefault()}><Search size={17} /><input aria-label="搜索审计日志" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索操作、对象或成员" /></form><label className="report-select">操作类型<select value={actionFilter} onChange={(event) => setActionFilter(event.target.value)}><option value="all">全部操作</option>{actions.map((action) => <option key={action} value={action}>{auditLabel(action)}</option>)}</select></label></Toolbar><DataTable loading={events.isLoading} empty={!filtered.length} headers={["时间", "操作", "对象", "对象 ID", "操作人", "来源 IP"]}>{filtered.map((event) => <tr key={event.id}><td>{formatDate(event.createdAt)}</td><td><span className="audit-action">{auditLabel(event.action)}</span></td><td>{event.entityType}</td><td className="mono truncate">{event.entityId}</td><td><strong>{event.actor.name}</strong><small>{event.actor.email}</small></td><td className="mono">{event.ip || "-"}</td></tr>)}</DataTable></>;
 }
 
-function MembersPage() {
+type MemberRow = User & { status: "ACTIVE" | "DISABLED"; createdAt: string };
+
+function MembersPage({ user }: { user: User }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const members = useQuery({ queryKey: ["members"], queryFn: () => api<any[]>("/members") });
+  const [selfOpen, setSelfOpen] = useState(false);
+  const [rolesOpen, setRolesOpen] = useState(false);
+  const [editing, setEditing] = useState<MemberRow | null>(null);
+  const members = useQuery({ queryKey: ["members"], queryFn: () => api<MemberRow[]>("/members") });
   const roles = useQuery({ queryKey: ["roles"], queryFn: () => api<Role[]>("/roles") });
-  return <><PageHeader eyebrow="最小权限" title="成员与角色" description="每位成员使用独立账号，权限和操作记录相互隔离。" action={<button className="button primary" onClick={() => setOpen(true)}><UserPlus size={17} />添加成员</button>} /><DataTable loading={members.isLoading} empty={!(members.data?.length)} headers={["成员", "邮箱", "角色", "权限数", "状态", "加入时间"]}>{members.data?.map((member) => <tr key={member.id}><td><span className="member-cell"><span className="avatar">{member.name.slice(0, 1)}</span><strong>{member.name}</strong></span></td><td>{member.email}</td><td><StatusBadge status={member.role.code} label={member.role.name} /></td><td>{member.role.permissions.includes("*") ? "全部" : member.role.permissions.length}</td><td><span className="ok-label"><Check size={13} />启用</span></td><td>{formatDate(member.createdAt)}</td></tr>)}</DataTable>{open && <CreateMemberModal roles={roles.data ?? []} onClose={() => setOpen(false)} onCreated={() => queryClient.invalidateQueries({ queryKey: ["members"] })} />}</>;
+  const isOwner = user.role.code === "OWNER";
+  const refreshMembers = () => queryClient.invalidateQueries({ queryKey: ["members"] });
+  const disable = useMutation({ mutationFn: (member: MemberRow) => api(`/members/${member.id}`, { method: "DELETE" }), onSuccess: () => { refreshMembers(); emitToast("成员账号已停用"); }, onError: (error) => emitToast(errorText(error), "error") });
+  const restore = useMutation({ mutationFn: (member: MemberRow) => api(`/members/${member.id}/restore`, { method: "POST", body: jsonBody({}) }), onSuccess: () => { refreshMembers(); emitToast("成员账号已恢复"); }, onError: (error) => emitToast(errorText(error), "error") });
+  return <><PageHeader eyebrow="最小权限" title="成员与角色" description="仓库所有者可维护成员账号和角色权限；每位成员也可修改自己的账号密码。" action={<div className="page-actions"><button className="button" onClick={() => setSelfOpen(true)}><Pencil size={17} />修改我的账号</button>{isOwner && <button className="button" onClick={() => setRolesOpen(true)}><ShieldCheck size={17} />编辑角色权限</button>}{isOwner && <button className="button primary" onClick={() => setOpen(true)}><UserPlus size={17} />添加成员</button>}</div>} /><DataTable loading={members.isLoading} empty={!(members.data?.length)} headers={["成员", "邮箱", "角色", "权限数", "状态", "加入时间", "操作"]}>{members.data?.map((member) => <tr key={member.id}><td><span className="member-cell"><span className="avatar">{member.name.slice(0, 1)}</span><strong>{member.name}</strong></span></td><td>{member.email}</td><td><StatusBadge status={member.role.code} label={member.role.name} /></td><td>{member.role.permissions.includes("*") ? "全部" : member.role.permissions.length}</td><td>{member.status === "ACTIVE" ? <span className="ok-label"><Check size={13} />启用</span> : <span className="muted">已停用</span>}</td><td>{formatDate(member.createdAt)}</td><td><div className="row-actions">{isOwner && <button className="icon-button" title="修改成员账号" onClick={() => setEditing(member)}><Pencil size={15} /></button>}{isOwner && member.id !== user.id && member.status === "ACTIVE" && <button className="icon-button danger" title="删除成员账号" disabled={disable.isPending} onClick={() => window.confirm(`确定停用成员 ${member.name} 的账号吗？`) && disable.mutate(member)}><Trash2 size={15} /></button>}{isOwner && member.status === "DISABLED" && <button className="button small" disabled={restore.isPending} onClick={() => restore.mutate(member)}><RotateCcw size={14} />恢复</button>}</div></td></tr>)}</DataTable>{open && <CreateMemberModal roles={roles.data ?? []} onClose={() => setOpen(false)} onCreated={refreshMembers} />}{editing && <EditMemberModal member={editing} roles={roles.data ?? []} onClose={() => setEditing(null)} onSaved={refreshMembers} />}{selfOpen && <SelfAccountModal user={user} onClose={() => setSelfOpen(false)} />}{rolesOpen && <RolePermissionsModal roles={roles.data ?? []} onClose={() => setRolesOpen(false)} onSaved={() => queryClient.invalidateQueries({ queryKey: ["roles"] })} />}</>;
 }
 
 function CreateMemberModal({ roles, onClose, onCreated }: { roles: Role[]; onClose: () => void; onCreated: () => void }) {
@@ -603,15 +746,56 @@ function CreateMemberModal({ roles, onClose, onCreated }: { roles: Role[]; onClo
   return <Modal title="添加仓库成员" subtitle="初始密码仅在当前表单中输入，不会被系统明文保存" onClose={onClose}><form className="form-grid" onSubmit={(event) => { event.preventDefault(); create.mutate(); }}><label>姓名<input required value={name} onChange={(event) => setName(event.target.value)} /></label><label>邮箱<input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label><label>初始密码<input required minLength={10} type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label><label>角色<select value={roleId} onChange={(event) => setRoleId(event.target.value)}>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>{create.error && <ErrorBanner>{errorText(create.error)}</ErrorBanner>}<ModalActions onClose={onClose} pending={create.isPending} submitLabel="创建账号" /></form></Modal>;
 }
 
+function EditMemberModal({ member, roles, onClose, onSaved }: { member: MemberRow; roles: Role[]; onClose: () => void; onSaved: () => void }) {
+  const [name, setName] = useState(member.name); const [email, setEmail] = useState(member.email); const [password, setPassword] = useState(""); const [roleId, setRoleId] = useState(member.role.id);
+  const update = useMutation({ mutationFn: () => api(`/members/${member.id}`, { method: "PUT", body: jsonBody({ name, email, password, roleId }) }), onSuccess: () => { onSaved(); emitToast("成员账号已更新"); onClose(); } });
+  return <Modal title={`修改成员 · ${member.name}`} subtitle="密码留空则不变；修改密码后该成员需要重新登录" onClose={onClose}><form className="form-grid" onSubmit={(event) => { event.preventDefault(); update.mutate(); }}><label>姓名<input required value={name} onChange={(event) => setName(event.target.value)} /></label><label>邮箱<input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label><label>新密码<input minLength={10} type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="留空不修改" /></label><label>角色<select value={roleId} onChange={(event) => setRoleId(event.target.value)}>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>{update.error && <ErrorBanner>{errorText(update.error)}</ErrorBanner>}<ModalActions onClose={onClose} pending={update.isPending} submitLabel="保存成员" /></form></Modal>;
+}
+
+function SelfAccountModal({ user, onClose }: { user: User; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState(user.name); const [email, setEmail] = useState(user.email); const [password, setPassword] = useState("");
+  const update = useMutation({ mutationFn: () => api("/auth/me", { method: "PUT", body: jsonBody({ name, email, password }) }), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["me"] }); queryClient.invalidateQueries({ queryKey: ["members"] }); emitToast("我的账号已更新"); onClose(); } });
+  return <Modal title="修改我的账号" subtitle="密码留空则不变；新密码至少 10 位" onClose={onClose}><form className="form-grid" onSubmit={(event) => { event.preventDefault(); update.mutate(); }}><label>姓名<input required value={name} onChange={(event) => setName(event.target.value)} /></label><label>邮箱<input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label><label>新密码<input minLength={10} type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="留空不修改" /></label>{update.error && <ErrorBanner>{errorText(update.error)}</ErrorBanner>}<ModalActions onClose={onClose} pending={update.isPending} submitLabel="保存我的账号" /></form></Modal>;
+}
+
+function RolePermissionsModal({ roles, onClose, onSaved }: { roles: Role[]; onClose: () => void; onSaved: () => void }) {
+  const editableRoles = roles.filter((role) => role.code !== "OWNER");
+  const [roleId, setRoleId] = useState(editableRoles[0]?.id ?? "");
+  const role = editableRoles.find((item) => item.id === roleId);
+  const [name, setName] = useState(role?.name ?? "");
+  const [permissions, setPermissions] = useState<string[]>(role?.permissions ?? []);
+  useEffect(() => { setName(role?.name ?? ""); setPermissions(role?.permissions ?? []); }, [role?.id]);
+  const update = useMutation({ mutationFn: () => api(`/roles/${roleId}`, { method: "PUT", body: jsonBody({ name, permissions }) }), onSuccess: () => { onSaved(); emitToast("角色权限已更新"); onClose(); } });
+  const toggle = (permission: string) => setPermissions((current) => current.includes(permission) ? current.filter((item) => item !== permission) : [...current, permission]);
+  return <Modal title="编辑角色权限" subtitle="所有者角色不可修改；危险权限请谨慎勾选" onClose={onClose} wide>{!editableRoles.length ? <EmptyState icon={<ShieldCheck />} title="没有可编辑角色" description="所有者角色受系统保护。" /> : <form className="role-permission-form" onSubmit={(event) => { event.preventDefault(); update.mutate(); }}><label>选择角色<select value={roleId} onChange={(event) => setRoleId(event.target.value)}>{editableRoles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>角色名称<input required value={name} onChange={(event) => setName(event.target.value)} /></label><div className="permission-grid">{permissionOptions.map(([permission, label]) => <label key={permission} className="permission-card"><input type="checkbox" checked={permissions.includes(permission)} onChange={() => toggle(permission)} /><span>{label}</span><small>{permission}</small></label>)}</div>{update.error && <ErrorBanner>{errorText(update.error)}</ErrorBanner>}<ModalActions onClose={onClose} pending={update.isPending} submitLabel="保存角色" /></form>}</Modal>;
+}
+
 function SettingsPage() {
   const queryClient = useQueryClient();
   const settings = useQuery({ queryKey: ["warehouse-automation"], queryFn: () => api<AutomationSettings>("/settings/warehouse-automation") });
+  const aiSettings = useQuery({ queryKey: ["ai-model-settings"], queryFn: () => api<AiModelSettings>("/settings/ai-model") });
   const [time, setTime] = useState("20:00");
+  const [aiBaseUrl, setAiBaseUrl] = useState("");
+  const [aiModel, setAiModel] = useState("");
+  const [aiApiKey, setAiApiKey] = useState("");
+  const [aiEnabled, setAiEnabled] = useState(true);
+  const [suppliers, setSuppliers] = useState(() => window.localStorage.getItem("cangku:suppliers") ?? "");
   useEffect(() => setTime(settings.data?.pendingTime ?? settings.data?.currentTime ?? "20:00"), [settings.data?.currentTime, settings.data?.pendingTime]);
+  useEffect(() => { if (!aiSettings.data) return; setAiBaseUrl(aiSettings.data.baseUrl); setAiModel(aiSettings.data.model); setAiEnabled(aiSettings.data.enabled); }, [aiSettings.data]);
   const save = useMutation({
     mutationFn: () => api<AutomationSettings>("/settings/warehouse-automation", { method: "PUT", body: jsonBody({ autoOutboundTime: time }) }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["warehouse-automation"] }); emitToast("自动出库时间已保存，将从次日生效"); },
   });
+  const saveAi = useMutation({
+    mutationFn: () => api<AiModelSettings>("/settings/ai-model", { method: "PUT", body: jsonBody({ baseUrl: aiBaseUrl, model: aiModel, apiKey: aiApiKey, enabled: aiEnabled }) }),
+    onSuccess: () => { setAiApiKey(""); queryClient.invalidateQueries({ queryKey: ["ai-model-settings"] }); emitToast("AI 模型配置已安全保存"); },
+  });
+  const testAi = useMutation({
+    mutationFn: () => api<{ ok: boolean; latencyMs: number; model: string }>("/settings/ai-model/test", { method: "POST", body: jsonBody({}) }),
+    onSuccess: (result) => emitToast(`模型连接成功 · ${result.model} · ${result.latencyMs}ms`),
+  });
+  const saveSuppliers = () => { window.localStorage.setItem("cangku:suppliers", suppliers); emitToast("供应商配置已保存"); };
   return <>
     <PageHeader eyebrow="仓库自动化" title="系统设置" description="自动出库时间由管理员维护，修改从次日开始生效。" />
     <section className="automation-setting-band">
@@ -623,7 +807,18 @@ function SettingsPage() {
       <div className="automation-effective"><span>生效规则</span><strong>{settings.data?.pendingTime ? `${settings.data.effectiveFrom} 起改为 ${settings.data.pendingTime}` : "修改后次日生效"}</strong><small>今天已经建立的登记批次不会临时改变时间。</small></div>
     </section>
     {(settings.error || save.error) && <ErrorBanner>{errorText(settings.error ?? save.error)}</ErrorBanner>}
-    <div className="settings-bands"><section><div><h2>仓库范围</h2><p>当前启用一个主仓，库存记录已保留仓库标识，未开放跨仓调拨。</p></div><StatusBadge status="ACTIVE" label="主仓启用" /></section><section><div><h2>AI 供应商</h2><p>通过部署环境配置兼容服务、模型和密钥；页面不会读取或显示密钥。</p></div><span className="config-chip">环境变量管理</span></section><section><div><h2>移动端能力</h2><p>支持响应式操作与 OCR 拍照上传；首版不提供条码、标签打印和离线写入。</p></div><span className="config-chip">PWA 已启用</span></section><section><div><h2>文件保留</h2><p>导入源文件默认保留 30 天，导出文件默认保留 7 天。</p></div><span className="config-chip">自动清理策略</span></section></div>
+    <section className="ai-model-settings">
+      <div className="ai-model-settings-head"><div><Sparkles size={22} /><span><h2>AI 模型配置</h2><p>用于表格字段映射、图片和 PDF 货单识别。密钥由后端加密保存，前端不会读取明文。</p></span></div><StatusBadge status={aiSettings.data?.enabled && aiSettings.data?.hasApiKey ? "ACTIVE" : "DISABLED"} label={aiSettings.data?.enabled && aiSettings.data?.hasApiKey ? "已配置" : "未配置"} /></div>
+      <form className="ai-model-form" onSubmit={(event) => { event.preventDefault(); saveAi.mutate(); }}>
+        <label>API 地址<input type="url" required value={aiBaseUrl} onChange={(event) => setAiBaseUrl(event.target.value)} placeholder="https://api.openai.com/v1" /></label>
+        <label>模型名称<input required value={aiModel} onChange={(event) => setAiModel(event.target.value)} placeholder="gpt-4o-mini" /></label>
+        <label>API 密钥<input type="password" value={aiApiKey} onChange={(event) => setAiApiKey(event.target.value)} placeholder={aiSettings.data?.hasApiKey ? `${aiSettings.data.apiKeyMasked}（留空保持不变）` : "首次配置必须填写"} autoComplete="new-password" /></label>
+        <label className="check-toggle"><input type="checkbox" checked={aiEnabled} onChange={(event) => setAiEnabled(event.target.checked)} />启用 AI 模型</label>
+        <div className="ai-model-actions"><button className="button" type="button" disabled={!aiSettings.data?.hasApiKey || testAi.isPending} onClick={() => testAi.mutate()}>{testAi.isPending ? "正在测试" : "测试连接"}</button><button className="button primary" disabled={saveAi.isPending}>{saveAi.isPending ? "正在保存" : "保存模型配置"}</button></div>
+      </form>
+      {(aiSettings.error || saveAi.error || testAi.error) && <ErrorBanner>{errorText(aiSettings.error ?? saveAi.error ?? testAi.error)}</ErrorBanner>}
+    </section>
+    <div className="settings-bands"><section><div><h2>仓库范围</h2><p>当前启用一个主仓，库存记录已保留仓库标识，未开放跨仓调拨。</p></div><StatusBadge status="ACTIVE" label="主仓启用" /></section><section className="supplier-config"><div><h2>供应商配置</h2><p>每行一个供应商名称，新建表单和导入备注可按这里统一填写。</p></div><textarea aria-label="供应商列表" value={suppliers} onChange={(event) => setSuppliers(event.target.value)} placeholder="例如：\n广州一号供应商\n杭州针织厂" rows={4} /><button className="button" onClick={saveSuppliers}>保存供应商</button></section><section><div><h2>移动端能力</h2><p>支持响应式操作与 OCR 拍照上传；首版不提供条码、标签打印和离线写入。</p></div><span className="config-chip">PWA 已启用</span></section><section><div><h2>文件保留</h2><p>导入源文件默认保留 30 天，导出文件默认保留 7 天。</p></div><span className="config-chip">自动清理策略</span></section></div>
   </>;
 }
 
@@ -635,8 +830,9 @@ function SectionHeading({ title, meta, action }: { title: string; meta?: string;
   return <div className="section-heading"><div><h2>{title}</h2>{meta && <span>{meta}</span>}</div>{action}</div>;
 }
 
-function Metric({ label, value, unit, tone = "neutral" }: { label: string; value: string; unit: string; tone?: string }) {
-  return <article className={`metric ${tone}`}><span>{label}</span><div><strong>{value}</strong><small>{unit}</small></div></article>;
+function Metric({ label, value, unit, tone = "neutral", onClick }: { label: string; value: string; unit: string; tone?: string; onClick?: () => void }) {
+  const content = <><span>{label}</span><div><strong>{value}</strong><small>{unit}</small></div></>;
+  return onClick ? <button type="button" className={`metric metric-button ${tone}`} onClick={onClick}>{content}</button> : <article className={`metric ${tone}`}>{content}</article>;
 }
 
 function Toolbar({ children }: { children: ReactNode }) { return <div className="toolbar">{children}</div>; }
@@ -645,9 +841,9 @@ function Segmented({ value, options, onChange }: { value: string; options: Array
   return <div className="segmented">{options.map((option) => <button type="button" className={value === option.value ? "active" : ""} key={option.value} onClick={() => onChange(option.value)}>{option.label}</button>)}</div>;
 }
 
-function DataTable({ headers, children, loading, empty }: { headers: string[]; children?: ReactNode; loading?: boolean; empty?: boolean }) {
+function DataTable({ headers, children, loading, empty, emptyState }: { headers: string[]; children?: ReactNode; loading?: boolean; empty?: boolean; emptyState?: ReactNode }) {
   if (loading) return <PageLoading />;
-  if (empty) return <EmptyState icon={<ClipboardList />} title="暂无数据" description="完成第一笔业务后，记录会显示在这里。" />;
+  if (empty) return emptyState ?? <EmptyState icon={<ClipboardList />} title="暂无数据" description="完成第一笔业务后，记录会显示在这里。" />;
   return <div className="table-wrap"><table><thead><tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{children}</tbody></table></div>;
 }
 
@@ -692,7 +888,7 @@ function documentDescription(type: string) {
 
 function formatDate(value: string) { return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
 function formatBytes(bytes: number) { return bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
-function auditLabel(action: string) { return ({ "style.created": "创建款式", "style.updated": "更新商品", "document.created": "创建单据", "document.confirmed": "确认单据", "document.reserved": "预留库存", "document.posted": "单据过账", "document.reversed": "冲销单据", "daily_outbound.auto_posted": "每日自动出库", "daily_outbound.supplement_posted": "补充出库", "simple_import.inbound_posted": "模板入库", "simple_import.outbound_confirmed": "导入出库登记", "automation.outbound_time.updated": "修改自动出库时间", "approval.approved": "审批通过", "approval.rejected": "审批驳回", "member.created": "创建成员" } as Record<string, string>)[action] ?? action; }
+function auditLabel(action: string) { return ({ "style.created": "创建款式", "style.updated": "更新商品", "document.created": "创建单据", "document.confirmed": "确认单据", "document.reserved": "预留库存", "document.posted": "单据过账", "document.reversed": "冲销单据", "daily_outbound.auto_posted": "每日自动出库", "daily_outbound.supplement_posted": "补充出库", "simple_import.inbound_posted": "模板入库", "simple_import.outbound_confirmed": "导入出库登记", "automation.outbound_time.updated": "修改自动出库时间", "approval.approved": "审批通过", "approval.rejected": "审批驳回", "member.created": "创建成员", "member.updated": "修改成员", "member.disabled": "停用成员", "member.restored": "恢复成员", "member.self_updated": "修改自己的账号", "role.updated": "修改角色", "style.deleted": "删除商品", "style.archived": "停用商品" } as Record<string, string>)[action] ?? action; }
 function ledgerSource(document: { documentNo: string; type: string; reason?: string | null; sourceRef?: string | null }) {
   if (document.documentNo.startsWith("CX-")) return "批次回退";
   if (document.reason === "每日登记自动结算") return "每日自动出库";

@@ -4,6 +4,7 @@ import {
   CanActivate,
   ConflictException,
   Controller,
+  Delete,
   ExecutionContext,
   ForbiddenException,
   Get,
@@ -20,7 +21,7 @@ import { APP_GUARD, Reflector } from "@nestjs/core";
 import { Request, Response } from "express";
 import { createHash, randomBytes } from "node:crypto";
 import { hash, verify } from "argon2";
-import { createMemberSchema, loginSchema } from "@cangku/contracts";
+import { createMemberSchema, loginSchema, updateMemberSchema, updateSelfSchema } from "@cangku/contracts";
 import { PrismaService } from "./prisma.module";
 import { AuthUser, CurrentUser, IS_PUBLIC_KEY, PERMISSIONS_KEY, Public, RequirePermissions } from "./auth-context";
 
@@ -123,6 +124,29 @@ class AuthController {
     return { user };
   }
 
+  @Put("me")
+  async updateMe(@Body() input: unknown, @CurrentUser() user: AuthUser, @Req() request: Request) {
+    const parsed = updateSelfSchema.safeParse(input);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    try {
+      const before = await this.prisma.user.findUniqueOrThrow({ where: { id: user.id }, include: { role: true } });
+      const updated = await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          name: parsed.data.name,
+          email: parsed.data.email.toLowerCase(),
+          ...(parsed.data.password ? { passwordHash: await hash(parsed.data.password, { type: 2 }) } : {}),
+        },
+        include: { role: true },
+      });
+      await this.prisma.auditEvent.create({ data: { organizationId: user.organizationId, actorId: user.id, action: "member.self_updated", entityType: "User", entityId: user.id, before, after: updated, ip: request.ip } });
+      return { user: { id: updated.id, organizationId: updated.organizationId, email: updated.email, name: updated.name, role: updated.role } };
+    } catch (error) {
+      if (String(error).includes("Unique constraint")) throw new ConflictException("该邮箱已存在");
+      throw error;
+    }
+  }
+
   @Post("logout")
   async logout(@Req() request: Request, @Res({ passthrough: true }) response: Response) {
     const token = request.cookies?.[SESSION_COOKIE];
@@ -173,6 +197,57 @@ class MembersController {
       throw error;
     }
   }
+
+  @Put(":id")
+  async update(@Param("id") id: string, @Body() input: unknown, @CurrentUser() user: AuthUser, @Req() request: Request) {
+    if (user.role.code !== "OWNER") throw new ForbiddenException("只有仓库所有者可以修改成员账号");
+    const parsed = updateMemberSchema.safeParse(input);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    const role = await this.prisma.role.findFirst({ where: { id: parsed.data.roleId, organizationId: user.organizationId } });
+    if (!role) throw new BadRequestException("角色不存在");
+    const before = await this.prisma.user.findFirst({ where: { id, organizationId: user.organizationId }, include: { role: true } });
+    if (!before) throw new BadRequestException("成员不存在");
+    try {
+      const updated = await this.prisma.user.update({
+        where: { id },
+        data: {
+          name: parsed.data.name,
+          email: parsed.data.email.toLowerCase(),
+          roleId: role.id,
+          ...(parsed.data.password ? { passwordHash: await hash(parsed.data.password, { type: 2 }) } : {}),
+        },
+        select: { id: true, email: true, name: true, status: true, createdAt: true, role: { select: { id: true, code: true, name: true, permissions: true } } },
+      });
+      if (parsed.data.password) await this.prisma.session.deleteMany({ where: { userId: id } });
+      await this.prisma.auditEvent.create({ data: { organizationId: user.organizationId, actorId: user.id, action: "member.updated", entityType: "User", entityId: id, before, after: updated, ip: request.ip } });
+      return updated;
+    } catch (error) {
+      if (String(error).includes("Unique constraint")) throw new ConflictException("该邮箱已存在");
+      throw error;
+    }
+  }
+
+  @Post(":id/restore")
+  async restore(@Param("id") id: string, @CurrentUser() user: AuthUser, @Req() request: Request) {
+    if (user.role.code !== "OWNER") throw new ForbiddenException("只有仓库所有者可以恢复成员账号");
+    const before = await this.prisma.user.findFirst({ where: { id, organizationId: user.organizationId }, include: { role: true } });
+    if (!before) throw new BadRequestException("成员不存在");
+    const updated = await this.prisma.user.update({ where: { id }, data: { status: "ACTIVE" }, select: { id: true, email: true, name: true, status: true, createdAt: true, role: { select: { id: true, code: true, name: true, permissions: true } } } });
+    await this.prisma.auditEvent.create({ data: { organizationId: user.organizationId, actorId: user.id, action: "member.restored", entityType: "User", entityId: id, before, after: updated, ip: request.ip } });
+    return updated;
+  }
+
+  @Delete(":id")
+  async remove(@Param("id") id: string, @CurrentUser() user: AuthUser, @Req() request: Request) {
+    if (user.role.code !== "OWNER") throw new ForbiddenException("只有仓库所有者可以删除成员账号");
+    if (id === user.id) throw new BadRequestException("不能在成员列表删除自己的账号，请修改自己的账号信息");
+    const before = await this.prisma.user.findFirst({ where: { id, organizationId: user.organizationId }, include: { role: true } });
+    if (!before) throw new BadRequestException("成员不存在");
+    const updated = await this.prisma.user.update({ where: { id }, data: { status: "DISABLED" }, select: { id: true, email: true, name: true, status: true, createdAt: true, role: { select: { id: true, code: true, name: true, permissions: true } } } });
+    await this.prisma.session.deleteMany({ where: { userId: id } });
+    await this.prisma.auditEvent.create({ data: { organizationId: user.organizationId, actorId: user.id, action: "member.disabled", entityType: "User", entityId: id, before, after: updated, ip: request.ip } });
+    return updated;
+  }
 }
 
 @Controller("roles")
@@ -186,11 +261,14 @@ class RolesController {
 
   @Put(":id")
   @RequirePermissions("members.manage")
-  async update(@CurrentUser() user: AuthUser, @Param("id") id: string, @Body() body: { name?: string; permissions?: string[] }) {
+  async update(@CurrentUser() user: AuthUser, @Param("id") id: string, @Body() body: { name?: string; permissions?: string[] }, @Req() request: Request) {
+    if (user.role.code !== "OWNER") throw new ForbiddenException("只有仓库所有者可以修改角色权限");
     const role = await this.prisma.role.findFirst({ where: { id, organizationId: user.organizationId } });
     if (!role) throw new BadRequestException("角色不存在");
     if (role.code === "OWNER") throw new ForbiddenException("所有者角色不可修改");
-    return this.prisma.role.update({ where: { id }, data: { name: body.name, permissions: body.permissions } });
+    const updated = await this.prisma.role.update({ where: { id }, data: { name: body.name, permissions: Array.isArray(body.permissions) ? body.permissions : role.permissions } });
+    await this.prisma.auditEvent.create({ data: { organizationId: user.organizationId, actorId: user.id, action: "role.updated", entityType: "Role", entityId: id, before: role, after: updated, ip: request.ip } });
+    return updated;
   }
 }
 
