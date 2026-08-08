@@ -404,9 +404,14 @@ td > small { margin-top: 3px; max-width: 220px; overflow: hidden; text-overflow:
 .variant-editor { border: 1px solid var(--line); overflow: auto; }
 .variant-editor-head { min-height: 46px; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; background: #f0f2ef; border-bottom: 1px solid var(--line); }
 .variant-editor-head strong { font-size: 11px; }
-.variant-bulk-tools, .variant-chip-tools, .direct-entry-bar { display: flex; align-items: end; gap: 8px; padding: 9px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-.variant-bulk-tools label, .direct-entry-bar label { display: grid; gap: 4px; font-size: 10px; }
-.variant-bulk-tools input, .direct-entry-bar input, .direct-entry-bar select { min-height: 32px; min-width: 96px; }
+.variant-bulk-tools, .variant-chip-tools, .direct-entry-bar, .bulk-entry-bar { display: flex; align-items: end; gap: 8px; padding: 9px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.variant-bulk-tools label, .direct-entry-bar label, .bulk-entry-bar label { display: grid; gap: 4px; font-size: 10px; }
+.variant-bulk-tools input, .direct-entry-bar input, .direct-entry-bar select, .bulk-entry-bar input, .bulk-entry-bar select { min-height: 32px; min-width: 96px; }
+.bulk-entry-bar { background: #fafbfa; border-top: 0; }
+.bulk-entry-bar label select { min-width: 132px; }
+.bulk-entry-bar label input { min-width: 72px; }
+.bulk-cell-preview { align-self: center; color: var(--muted); font-size: 10px; font-weight: 700; white-space: nowrap; }
+.bulk-divider { width: 1px; height: 22px; align-self: center; background: var(--line); }
 .variant-chip-tools span { color: var(--muted); font-size: 10px; font-weight: 700; }
 .variant-editor-columns, .variant-editor-row { min-width: 760px; display: grid; grid-template-columns: 54px minmax(170px, 1.2fr) minmax(120px, .8fr) minmax(90px, .6fr) 90px 34px; gap: 8px; align-items: center; padding: 8px 10px; }
 .variant-editor-columns { min-height: 34px; color: var(--muted); background: #fafbfa; border-bottom: 1px solid var(--line); font-size: 9px; font-weight: 700; }

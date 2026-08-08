@@ -82,6 +82,11 @@ export function GoodsOrderEditorPage({ canUseAi, defaultType = "INBOUND", locked
   const [directColor, setDirectColor] = useState("");
   const [directSize, setDirectSize] = useState("");
   const [directQuantity, setDirectQuantity] = useState("");
+  const [bulkScope, setBulkScope] = useState<"row" | "col" | "all">("row");
+  const [bulkCartons, setBulkCartons] = useState("");
+  const [bulkPerCarton, setBulkPerCarton] = useState("");
+  const [bulkLoose, setBulkLoose] = useState("");
+  const [bulkQuantity, setBulkQuantity] = useState("");
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [pasteErrors, setPasteErrors] = useState<string[]>([]);
@@ -326,6 +331,94 @@ export function GoodsOrderEditorPage({ canUseAi, defaultType = "INBOUND", locked
     setStep("edit");
   };
 
+  const bulkTargetSkus = (scope: "row" | "col" | "all"): InventoryRow[] => {
+    if (scope === "row") return selectedSkus.filter((item) => item.size === directSize);
+    if (scope === "col") return selectedSkus.filter((item) => item.color === directColor);
+    return selectedSkus;
+  };
+
+  const bulkScopeCount = (scope: "row" | "col" | "all") => bulkTargetSkus(scope).length;
+
+  const bulkPerCell = useMemo(() => {
+    if (!bulkCartons.trim() && !bulkPerCarton.trim() && !bulkLoose.trim()) return null;
+    const cartons = Number(bulkCartons);
+    const perCarton = Number(bulkPerCarton);
+    const loose = Number(bulkLoose);
+    if (!Number.isInteger(cartons) || cartons < 0 || !Number.isInteger(perCarton) || perCarton < 0 || !Number.isInteger(loose) || loose < 0) return null;
+    const perCell = cartons * perCarton + loose;
+    return perCell > 0 ? perCell : null;
+  }, [bulkCartons, bulkPerCarton, bulkLoose]);
+
+  const applyBulkQuantity = (scope: "row" | "col" | "all", quantity: number) => {
+    if (!Number.isInteger(quantity) || quantity < 0) return;
+    const targets = bulkTargetSkus(scope);
+    if (!targets.length) return;
+    setQuantities((current) => {
+      const next = { ...current };
+      for (const sku of targets) next[sku.id] = quantity;
+      return next;
+    });
+    setPreview(null);
+    setStep("edit");
+  };
+
+  const applyBulkCartons = (scope: "row" | "col" | "all", cartons: number, perCarton: number, loose: number) => {
+    if (!Number.isInteger(cartons) || cartons < 0 || !Number.isInteger(perCarton) || perCarton < 0 || !Number.isInteger(loose) || loose < 0) return;
+    const perCell = cartons * perCarton + loose;
+    if (perCell <= 0) return;
+    applyBulkQuantity(scope, perCell);
+  };
+
+  const bulkFillFromCartons = (scope: "row" | "col" | "all") => {
+    const cartons = Number(bulkCartons);
+    const perCarton = Number(bulkPerCarton);
+    const loose = Number(bulkLoose);
+    if (!Number.isInteger(cartons) || cartons < 0 || !Number.isInteger(perCarton) || perCarton < 0 || !Number.isInteger(loose) || loose < 0) {
+      notify("箱数、每箱件数、散件必须是非负整数", "error");
+      return;
+    }
+    const perCell = cartons * perCarton + loose;
+    if (perCell <= 0) {
+      notify("箱数 × 每箱件数 + 散件 必须大于 0", "error");
+      return;
+    }
+    const targets = bulkTargetSkus(scope);
+    if (!targets.length) {
+      notify("选定范围内没有可选规格", "error");
+      return;
+    }
+    applyBulkQuantity(scope, perCell);
+    notify(`已按箱装入库 ${targets.length} 个规格，每格 ${perCell} 件`);
+  };
+
+  const bulkFillFromQuantity = (scope: "row" | "col" | "all") => {
+    const quantity = Number(bulkQuantity);
+    if (!Number.isInteger(quantity) || quantity < 0) {
+      notify("数量必须是非负整数", "error");
+      return;
+    }
+    const targets = bulkTargetSkus(scope);
+    if (!targets.length) {
+      notify("选定范围内没有可选规格", "error");
+      return;
+    }
+    applyBulkQuantity(scope, quantity);
+    setBulkQuantity("");
+    notify(`已填入 ${targets.length} 个规格，每格 ${quantity} 件`);
+  };
+
+  const clearBulkScope = (scope: "row" | "col" | "all") => {
+    const targets = bulkTargetSkus(scope);
+    if (!targets.length) return;
+    setQuantities((current) => {
+      const next = { ...current };
+      for (const sku of targets) delete next[sku.id];
+      return next;
+    });
+    setPreview(null);
+    setStep("edit");
+  };
+
   const parsePaste = () => {
     const result = parseClipboardTable(pasteText, inventory.data ?? []);
     setPasteErrors(result.errors);
@@ -426,6 +519,7 @@ export function GoodsOrderEditorPage({ canUseAi, defaultType = "INBOUND", locked
           <section className="goods-order-matrix-wrap">
             <div className="goods-order-matrix-head"><div><strong>货单明细</strong><span>{totalQuantity.toLocaleString()} 件 · 选择商品后填写颜色尺码矩阵</span></div><div className="goods-order-matrix-head-actions"><select aria-label="选择商品" value={selectedStyle?.key ?? ""} onChange={(event) => setSelectedStyleKey(event.target.value)}><option value="">选择商品</option>{styleOptions.filter((item) => !search.trim() || `${item.styleNo} ${item.name}`.toLowerCase().includes(search.trim().toLowerCase())).map((item) => <option key={item.key} value={item.key}>{item.styleNo} · {item.name}</option>)}</select><button className="button small" disabled={!selectedSkus.length} onClick={() => clearSkus(selectedSkus)}><Trash2 size={14} />清空当前商品</button><span className="save-indicator">{saveState === "saving" || save.isPending ? <><LoaderCircle className="spin" size={14} />保存中</> : saveState === "clean" ? <><Check size={14} />已保存</> : saveState === "error" ? <><AlertTriangle size={14} />保存失败</> : <><Save size={14} />待保存</>}</span></div></div>
             <div className="direct-entry-bar"><label>颜色<select value={directColor} onChange={(event) => setDirectColor(event.target.value)}>{colors.map((item) => <option key={item.color} value={item.color}>{item.code ? `${item.code}-${item.color}` : item.color}</option>)}</select></label><label>尺码<select value={directSize} onChange={(event) => setDirectSize(event.target.value)}>{sizes.map((size) => <option key={size} value={size}>{size}</option>)}</select></label><label>数量<input type="number" min="0" inputMode="numeric" value={directQuantity} onChange={(event) => setDirectQuantity(event.target.value)} placeholder="0" /></label><button className="button" disabled={!selectedSkus.some((item) => item.color === directColor && item.size === directSize) || !Number.isInteger(Number(directQuantity)) || Number(directQuantity) < 0} onClick={applyDirectEntry}>填入</button></div>
+            <div className="bulk-entry-bar"><label>范围<select aria-label="批量填充范围" value={bulkScope} onChange={(event) => setBulkScope(event.target.value as "row" | "col" | "all")}><option value="row">当前尺码 {directSize || "—"} 整行</option><option value="col">当前颜色 {directColor ? `${directColor} 整列` : "整列"}</option><option value="all">当前商品全部</option></select></label><label>箱数<input type="number" min="0" inputMode="numeric" aria-label="箱数" value={bulkCartons} onChange={(event) => setBulkCartons(event.target.value)} placeholder="5" /></label><label>每箱件数<input type="number" min="0" inputMode="numeric" aria-label="每箱件数" value={bulkPerCarton} onChange={(event) => setBulkPerCarton(event.target.value)} placeholder="40" /></label><label>散件<input type="number" min="0" inputMode="numeric" aria-label="散件" value={bulkLoose} onChange={(event) => setBulkLoose(event.target.value)} placeholder="0" /></label><span className="bulk-cell-preview">每格 {bulkPerCell ?? "—"} 件 · {bulkScopeCount(bulkScope)} 格</span><button className="button" disabled={!selectedSkus.length || bulkPerCell === null || bulkScopeCount(bulkScope) === 0} onClick={() => bulkFillFromCartons(bulkScope)}><Boxes size={14} />按箱装入库</button><i className="bulk-divider" /><label>每格数量<input type="number" min="0" inputMode="numeric" aria-label="每格数量" value={bulkQuantity} onChange={(event) => setBulkQuantity(event.target.value)} placeholder="200" /></label><button className="button" disabled={!selectedSkus.length || !Number.isInteger(Number(bulkQuantity)) || Number(bulkQuantity) < 0 || bulkScopeCount(bulkScope) === 0} onClick={() => bulkFillFromQuantity(bulkScope)}>填入选定范围</button><button className="button danger-text" disabled={!selectedSkus.length || bulkScopeCount(bulkScope) === 0} onClick={() => clearBulkScope(bulkScope)}><Trash2 size={14} />清空范围</button></div>
             <div className="goods-order-matrix-scroll">{selectedStyle && selectedStyleMatchesSearch && filteredColors.length ? <table className="goods-order-matrix style-entry-matrix"><thead><tr><th className="sticky-col size-col">尺码</th>{filteredColors.map((item, index) => <th key={item.color}><i className={`swatch swatch-${index % 4}`} />{item.code ? `${item.code}-${item.color}` : item.color}</th>)}</tr></thead><tbody>{sizes.map((size, sizeIndex) => <tr key={size}><th className="sticky-col size-col">{size}</th>{filteredColors.map((colorItem, colorIndex) => { const sku = selectedSkus.find((item) => item.size === size && item.color === colorItem.color); const quantity = sku ? quantities[sku.id] ?? 0 : 0; const delta = type === "INBOUND" ? quantity : -quantity; const short = Boolean(sku && type === "OUTBOUND" && quantity > sku.available); return <td key={colorItem.color} className={short ? "shortage" : ""}>{sku ? <><input ref={(element) => { matrixInputRefs.current[sku.id] = element; }} aria-label={`${selectedStyle.styleNo} ${colorItem.color} ${size} 数量`} title={`当前库存 ${sku.onHand}，可用 ${sku.available}，预计变更 ${delta > 0 ? "+" : ""}${delta}`} type="number" min="0" inputMode="numeric" value={quantity || ""} onKeyDown={(event) => handleMatrixKeyDown(event, sizeIndex, colorIndex)} onChange={(event) => updateQuantity(sku.id, event.target.value)} /><small className="matrix-cell-meta">库 {sku.onHand} · 可 {sku.available}{quantity > 0 ? ` · 变 ${delta > 0 ? "+" : ""}${delta}` : ""}</small>{short && <button className="matrix-max-button" type="button" onClick={() => fillOutboundMax(sku.id, sku.available)}>最大 {sku.available}</button>}</> : <span className="matrix-empty">—</span>}</td>; })}</tr>)}</tbody></table> : <GoodsOrderEmptyState hasWarehouse={Boolean(selectedWarehouse)} hasSkuRows={hasSkuRows} showOnlyFilled={showOnlyFilled} search={search} onClearFilter={() => { setSearch(""); setShowOnlyFilled(false); }} />}</div>
           </section>
           <div className="goods-order-footer"><button className="button danger-text" onClick={() => cancel.mutate()} disabled={cancel.isPending}><Trash2 size={15} />取消草稿</button><div><button className="button" onClick={() => navigate(`/documents/${type}`)}>稍后处理</button><button className="button primary" disabled={!canPreview} onClick={() => previewRequest.mutate()}>{previewRequest.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}进入预览</button></div></div>
