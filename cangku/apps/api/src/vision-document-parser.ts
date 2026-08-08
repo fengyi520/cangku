@@ -34,15 +34,25 @@ function matrixFromPayload(payload: VisionPayload) {
 
 function parseMatrix(matrix: unknown[][]): ParsedVisionRow[] {
   const headerIndex = matrix.slice(0, 5).findIndex((row) => {
-    const first = text(row[0]);
     const rest = row.slice(1).map(text).filter(Boolean);
-    return Boolean(first) && rest.length > 0 && rest.some((value) => /^(?:XXS|XS|S|M|L|XL|XXL|XXXL|\d+XL)$/i.test(value));
+    return rest.length > 0 && rest.some((value) => /^(?:XXS|XS|S|M|L|XL|XXL|XXXL|\d+XL)$/i.test(value));
   });
   if (headerIndex < 0) return [];
   const header = matrix[headerIndex];
-  const styleNo = text(header[0]);
   const sizes = header.slice(1).map(text);
-  if (!styleNo || !sizes.some(Boolean)) return [];
+  let styleNo = text(header[0]);
+  if (!styleNo) {
+    // 模型有时把产品名单独放一行（表头行第一列为空），此时从上一行继承
+    for (let index = headerIndex - 1; index >= 0; index -= 1) {
+      const candidate = text(matrix[index]?.[0]);
+      if (candidate) {
+        styleNo = candidate;
+        break;
+      }
+    }
+  }
+  if (!sizes.some(Boolean)) return [];
+  const missingStyleNo = !styleNo;
 
   const rows: ParsedVisionRow[] = [];
   for (const source of matrix.slice(headerIndex + 1)) {
@@ -55,6 +65,7 @@ function parseMatrix(matrix: unknown[][]): ParsedVisionRow[] {
       if (!quantityText) continue;
       const quantity = Number(quantityText);
       const validationErrors = Number.isInteger(quantity) && quantity > 0 ? [] : ["数量必须为正整数"];
+      if (missingStyleNo && !validationErrors.includes("缺少款号")) validationErrors.push("缺少款号");
       rows.push({
         raw: { styleNo, color, size, quantity: rawQuantity },
         normalized: { styleNo, color, size, quantity },

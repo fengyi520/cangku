@@ -12,6 +12,10 @@ storage/
 backups/
 *.log
 .ocr-e2e-*
+.ai-similar-test*.json
+.map-test*.json
+e2e-*.mjs
+diag-*.mjs
 .DS_Store
 .vite/
 .auth/

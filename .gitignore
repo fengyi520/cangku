@@ -46,3 +46,8 @@ memory_file_metadata.json
 agent.json
 PROJECT_REVIEW_TODO.md
 *_TODO.md
+
+# Local E2E test artifacts
+e2e-*.mjs
+e2e-*.json
+diag-*.mjs

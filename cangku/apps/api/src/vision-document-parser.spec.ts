@@ -23,6 +23,39 @@ describe("vision document parser", () => {
     expect(rows.some((row) => row.normalized.color === "德绒男士内衣")).toBe(false);
   });
 
+  it("inherits product name from a standalone row when header row's first cell is empty", () => {
+    const rows = parseVisionPayload({
+      matrix: [
+        ["德绒套装7-31"],
+        ["", "L", "XL", "2XL", "3XL"],
+        ["1", "150", "400", "250", "450"],
+        ["2", "940", "742", "746", "790"],
+      ],
+    });
+
+    expect(rows).toHaveLength(8);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      normalized: { styleNo: "德绒套装7-31", color: "1", size: "L", quantity: 150 },
+      validationErrors: [],
+    }));
+    expect(rows[1]?.normalized).toEqual({ styleNo: "德绒套装7-31", color: "1", size: "XL", quantity: 400 });
+    expect(rows.at(-1)?.normalized).toEqual({ styleNo: "德绒套装7-31", color: "2", size: "3XL", quantity: 790 });
+  });
+
+  it("keeps data rows with missing styleNo flagged instead of dropping everything", () => {
+    const rows = parseVisionPayload({
+      matrix: [
+        ["", "L", "XL", "2XL"],
+        ["1", "150", "400", "250"],
+        ["2", "940", "742", "746"],
+      ],
+    });
+
+    expect(rows).toHaveLength(6);
+    expect(rows[0]?.normalized).toEqual({ styleNo: "", color: "1", size: "L", quantity: 150 });
+    expect(rows[0]?.validationErrors).toContain("缺少款号");
+  });
+
   it("keeps legacy row-shaped OCR responses compatible", () => {
     const rows = parseVisionPayload({ rows: [{ normalized: { styleNo: "A1", color: "黑", size: "M", quantity: 2 }, confidence: 0.8, validationErrors: [] }] });
     expect(rows).toEqual([expect.objectContaining({ normalized: { styleNo: "A1", color: "黑", size: "M", quantity: 2 }, confidence: 0.8 })]);
