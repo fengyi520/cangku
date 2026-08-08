@@ -66,7 +66,7 @@ function configuredPositiveNumber(name: string, fallback: number) {
 }
 
 @Injectable()
-class ObjectStorageService implements OnModuleInit {
+export class ObjectStorageService implements OnModuleInit {
   private readonly bucket = process.env.S3_BUCKET ?? "cangku";
   private readonly local = process.env.STORAGE_DRIVER === "local";
   private readonly localRoot = resolve(process.cwd(), process.env.LOCAL_STORAGE_PATH ?? "../../storage");
@@ -140,7 +140,7 @@ class ObjectStorageService implements OnModuleInit {
 }
 
 @Injectable()
-class AiAdapter {
+export class AiAdapter {
   constructor(private readonly aiConfig: AiConfigService) {}
 
   private async config(organizationId: string) {
@@ -180,7 +180,7 @@ class AiAdapter {
     return {};
   }
 
-  async extractDocument(organizationId: string, buffer: Buffer, mimeType: string, kind: ImportKind) {
+  async extractDocument(organizationId: string, buffer: Buffer, mimeType: string, kind: ImportKind, extraInstruction?: string) {
     const config = await this.config(organizationId);
     if (!config) {
       return [{ raw: {}, normalized: {}, confidence: 0, validationErrors: ["尚未配置视觉模型，OCR 文件已保留但无法识别"] }];
@@ -194,6 +194,7 @@ class AiAdapter {
       "CRITICAL for matrix output: put the product/style name (e.g. 德绒套装7-31) in the first cell of the FIRST matrix row, directly followed by the size labels. Never return a matrix whose first row starts with an empty cell, and never omit the product name. If the name appears on its own line above the table, merge it into the first row's first cell.",
       "For example, preserve a header row like [\"商品原文\",\"5XL\",\"6XL\",\"7XL\",\"8XL\"] as five separate cells without changing their text.",
       "Otherwise return {rows:[{normalized:{styleNo,name,skuCode,color,size,quantity,cartons,piecesPerCarton,countedPieces,sourceRef,counterparty,note},confidence:0..1,validationErrors:[]}]}. Omit missing fields.",
+      ...(extraInstruction ? [`User correction hint (re-check the document with this in mind, but do not invent text that is not visible): ${extraInstruction}`] : []),
     ].join("\n");
     const timeoutMs = configuredPositiveNumber("AI_OCR_TIMEOUT_MS", DEFAULT_OCR_TIMEOUT_MS);
     let text = "";
@@ -267,7 +268,7 @@ function deterministicMapping(headers: string[]) {
 
 const warehouseSizeOrder = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL", "3XL", "4XL", "5XL", "6XL"];
 
-function compareWarehouseRows(left: { normalized: Record<string, unknown> }, right: { normalized: Record<string, unknown> }) {
+export function compareWarehouseRows(left: { normalized: Record<string, unknown> }, right: { normalized: Record<string, unknown> }) {
   const text = (row: { normalized: Record<string, unknown> }, field: string) => String(row.normalized[field] ?? "").trim();
   const style = text(left, "styleNo").localeCompare(text(right, "styleNo"), "zh-CN", { numeric: true, sensitivity: "base" });
   if (style) return style;
@@ -749,5 +750,6 @@ class ExportsController {
   imports: [WarehouseModule, BullModule.registerQueue({ name: IMPORT_QUEUE }, { name: EXPORT_QUEUE }, { name: MAINTENANCE_QUEUE })],
   controllers: [ImportsController, ExportsController],
   providers: [ObjectStorageService, AiAdapter, ImportService, ImportProcessor, ExportService, ExportProcessor, RetentionScheduler, RetentionProcessor],
+  exports: [ObjectStorageService, AiAdapter],
 })
 export class JobsModule {}
