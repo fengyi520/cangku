@@ -1,5 +1,8 @@
 export type Role = { id: string; code: string; name: string; permissions: string[] };
 export type User = { id: string; organizationId: string; email: string; name: string; role: Role };
+export type StockStatus = "SELLABLE" | "INSPECTION" | "DAMAGED";
+export const STOCK_STATUS_LABELS: Record<StockStatus, string> = { SELLABLE: "可售", INSPECTION: "待检", DAMAGED: "残次" };
+export type StockBalanceItem = { status: StockStatus; onHand: number; reserved: number };
 export type Style = {
   id: string;
   styleNo: string;
@@ -17,13 +20,13 @@ export type InventoryRow = Sku & {
   reserved: number;
   available: number;
   lowStock: boolean;
-  balances: Array<{ status: string; onHand: number; reserved: number }>;
+  balances: Array<{ status: StockStatus; onHand: number; reserved: number }>;
 };
 export type Warehouse = { id: string; code: string; name: string; active: boolean };
 export type DocumentLine = {
   id: string;
   skuId: string;
-  stockStatus: string;
+  stockStatus: StockStatus;
   quantityPieces: number;
   countedPieces?: number | null;
   adjustmentDelta?: number | null;

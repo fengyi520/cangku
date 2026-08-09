@@ -17,6 +17,7 @@ import {
   FileSpreadsheet,
   History,
   LayoutDashboard,
+  LoaderCircle,
   LogIn,
   LogOut,
   Menu,
@@ -42,7 +43,8 @@ import { api, ApiError, downloadExport, jsonBody } from "./api";
 import { GoodsOrderEditorPage } from "./GoodsOrderEditorPage";
 import { colorSlot, signed, splitList } from "./domain";
 import { SimpleImportDialog } from "./SimpleImportDialog";
-import type { AiModelSettings, Approval, AuditEvent, AutomationSettings, ExportJob, ImportJob, InventoryRow, Notification, Role, Sku, StockDocument, Style, User } from "./types";
+import type { AiModelSettings, Approval, AuditEvent, AutomationSettings, ExportJob, ImportJob, InventoryRow, Notification, Role, Sku, StockDocument, StockStatus, Style, User } from "./types";
+import { STOCK_STATUS_LABELS } from "./types";
 
 const typeLabels: Record<string, string> = {
   INBOUND: "入库",
@@ -280,6 +282,9 @@ function DashboardPage() {
         <Metric label="可用库存" value={metrics.available.toLocaleString()} unit="件" tone="ink" />
         <Metric label="在库总量" value={metrics.onHand.toLocaleString()} unit="件" />
         <Metric label="已预留" value={metrics.reserved.toLocaleString()} unit="件" />
+        <Metric label="可售" value={metrics.sellable.toLocaleString()} unit="件" tone="ok" />
+        <Metric label="待检" value={metrics.inspection.toLocaleString()} unit="件" tone={metrics.inspection ? "warn" : "ink"} />
+        <Metric label="残次" value={metrics.damaged.toLocaleString()} unit="件" tone={metrics.damaged ? "danger" : "ink"} />
         <Metric label="低库存 SKU" value={metrics.lowStock.toLocaleString()} unit="项" tone={metrics.lowStock ? "warn" : "ok"} onClick={() => setLowStockOpen(true)} />
         <Metric label="待审批" value={metrics.pendingApprovals.toLocaleString()} unit="单" tone={metrics.pendingApprovals ? "danger" : "ok"} />
       </section>
@@ -322,7 +327,53 @@ function ProductStockSummary({ rows }: { rows: InventoryRow[] }) {
 }
 
 function LowStockModal({ rows, onClose }: { rows: InventoryRow[]; onClose: () => void }) {
-  return <Modal title="低库存提醒" subtitle="这些 SKU 的可用库存已低于商品页设置的库存预警值" onClose={onClose} wide>{!rows.length ? <EmptyState icon={<Check />} title="暂无低库存" description="所有商品都高于当前预警值。" /> : <><div className="modal-toolbar"><Link className="button primary" to="/documents/new?type=INBOUND" onClick={onClose}><Plus size={15} />新建入库补货单</Link><Link className="button" to="/reports" onClick={onClose}><Download size={15} />导出预警表</Link></div><DataTable headers={["商品", "颜色 / 尺码", "SKU", "可用", "预警值"]}>{rows.map((row) => <tr key={row.id}><td><strong>{row.style.styleNo}</strong><small>{row.style.name}</small></td><td>{row.color} / {row.size}</td><td className="mono">{row.skuCode}</td><td className="number negative">{row.available}</td><td className="number">{row.minStock}</td></tr>)}</DataTable></>}</Modal>;
+  const [adjusting, setAdjusting] = useState<InventoryRow | null>(null);
+  return <Modal title="低库存提醒" subtitle="这些 SKU 的可用库存已低于商品页设置的库存预警值" onClose={onClose} wide>{!rows.length ? <EmptyState icon={<Check />} title="暂无低库存" description="所有商品都高于当前预警值。" /> : <><div className="modal-toolbar"><Link className="button primary" to="/documents/new?type=INBOUND" onClick={onClose}><Plus size={15} />新建入库补货单</Link><Link className="button" to="/reports" onClick={onClose}><Download size={15} />导出预警表</Link></div><DataTable headers={["商品", "颜色 / 尺码", "SKU", "状态构成", "可用", "预警值", "操作"]}>{rows.map((row) => <tr key={row.id}><td><strong>{row.style.styleNo}</strong><small>{row.style.name}</small></td><td>{row.color} / {row.size}</td><td className="mono">{row.skuCode}</td><td><StockBreakdown balances={row.balances} /></td><td className="number negative">{row.available}</td><td className="number">{row.minStock}</td><td><button className="button small" onClick={() => setAdjusting(row)}><SlidersHorizontal size={14} />调整</button></td></tr>)}</DataTable></>}{adjusting && <QuickAdjustModal row={adjusting} onClose={() => setAdjusting(null)} />}</Modal>;
+}
+
+function StockBreakdown({ balances }: { balances: InventoryRow["balances"] }) {
+  const items = (["SELLABLE", "INSPECTION", "DAMAGED"] as StockStatus[]).map((status) => ({ status, onHand: balances.find((item) => item.status === status)?.onHand ?? 0 }));
+  if (!items.some((item) => item.onHand > 0)) return <span className="muted">—</span>;
+  return <span className="stock-breakdown">{items.filter((item) => item.onHand > 0).map((item) => <span key={item.status} className={`stock-breakdown-item ${item.status.toLowerCase()}`}><i className={`stock-state ${item.status.toLowerCase()}`} />{STOCK_STATUS_LABELS[item.status]} {item.onHand}</span>)}</span>;
+}
+
+function QuickAdjustModal({ row, onClose }: { row: InventoryRow; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [status, setStatus] = useState<StockStatus>("SELLABLE");
+  const [target, setTarget] = useState("");
+  const [note, setNote] = useState("");
+  const current = row.balances.find((item) => item.status === status);
+  const targetNumber = Number(target);
+  const adjust = useMutation({
+    mutationFn: () => api("/inventory/quick-adjust", { method: "POST", body: jsonBody({ lines: [{ skuId: row.id, stockStatus: status, targetOnHand: Math.floor(targetNumber), note: note.trim() || null }], reason: note.trim() || "低库存快捷调整" }) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["inventory"] });
+      queryClient.invalidateQueries({ queryKey: ["goods-order-inventory"] });
+      emitToast("库存已调整，生成已过账调整单");
+      onClose();
+    },
+    onError: (error) => emitToast(errorText(error), "error"),
+  });
+  const submit = () => {
+    if (!Number.isInteger(targetNumber) || targetNumber < 0) return;
+    adjust.mutate();
+  };
+  return <Modal title="快捷调整库存" subtitle={`${row.style.styleNo} · ${row.color} / ${row.size} · ${row.skuCode}`} onClose={onClose}>
+    <label>调整状态<select aria-label="调整状态" value={status} onChange={(event) => setStatus(event.target.value as StockStatus)}>{(["SELLABLE", "INSPECTION", "DAMAGED"] as StockStatus[]).map((item) => <option key={item} value={item}>{STOCK_STATUS_LABELS[item]}{current ? `（当前 ${current.onHand} 件）` : ""}</option>)}</select></label>
+    <label>调整为<input aria-label="调整后数量" type="number" min="0" inputMode="numeric" value={target} onChange={(event) => setTarget(event.target.value)} placeholder={String(current?.onHand ?? 0)} /></label>
+    <p className="form-footnote">调整后数量是目标值，差异会立即写入库存流水并生成一张已过账的库存调整单（TZ 单号）。</p>
+    <label>原因<input aria-label="调整原因" value={note} onChange={(event) => setNote(event.target.value)} placeholder="可选，写入审计与单据备注" /></label>
+    <div className="modal-actions"><button className="button" onClick={onClose}>取消</button><button className="button primary" disabled={!Number.isInteger(targetNumber) || targetNumber < 0 || adjust.isPending} onClick={submit}>{adjust.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}确认调整</button></div>
+  </Modal>;
+}
+
+function QuickAdjustButton({ row }: { row: InventoryRow }) {
+  const [open, setOpen] = useState(false);
+  return <>
+    <button className="button small" onClick={() => setOpen(true)}><SlidersHorizontal size={14} />调整</button>
+    {open && <QuickAdjustModal row={row} onClose={() => setOpen(false)} />}
+  </>;
 }
 
 function InventoryMatrix({ rows }: { rows: InventoryRow[] }) {
@@ -366,8 +417,8 @@ function InventoryPage() {
         <Segmented value={view} options={[{ value: "balance", label: "库存余额" }, { value: "ledger", label: "库存流水" }]} onChange={(value) => setView(value as typeof view)} />
       </Toolbar>
       {view === "balance" ? (
-        <DataTable loading={inventory.isLoading} empty={!(inventory.data?.length)} headers={["款式", "SKU", "颜色", "尺码", "状态构成", "在库", "预留", "可用", "预警"]}>
-          {inventory.data?.map((row) => <tr key={row.id}><td><strong>{row.style.styleNo}</strong><small>{row.style.name}</small></td><td className="mono">{row.skuCode}</td><td><span className="color-label"><i className={`swatch swatch-${colorSlot(row.color)}`} />{row.color}</span></td><td><strong>{row.size}</strong></td><td><div className="status-dots">{row.balances.map((balance) => <span key={balance.status} title={`${balance.status}: ${balance.onHand}`} className={`stock-state ${balance.status.toLowerCase()}`} />)}</div></td><td className="number">{row.onHand}</td><td className="number muted">{row.reserved}</td><td className="number strong">{row.available}</td><td>{row.lowStock ? <span className="alert-label"><AlertTriangle size={14} />低于 {row.minStock}</span> : <span className="ok-label"><Check size={14} />正常</span>}</td></tr>)}
+        <DataTable loading={inventory.isLoading} empty={!(inventory.data?.length)} headers={["款式", "SKU", "颜色", "尺码", "状态构成", "在库", "预留", "可用", "预警", "操作"]}>
+          {inventory.data?.map((row) => <tr key={row.id}><td><strong>{row.style.styleNo}</strong><small>{row.style.name}</small></td><td className="mono">{row.skuCode}</td><td><span className="color-label"><i className={`swatch swatch-${colorSlot(row.color)}`} />{row.color}</span></td><td><strong>{row.size}</strong></td><td><StockBreakdown balances={row.balances} /></td><td className="number">{row.onHand}</td><td className="number muted">{row.reserved}</td><td className="number strong">{row.available}</td><td>{row.lowStock ? <span className="alert-label"><AlertTriangle size={14} />低于 {row.minStock}</span> : <span className="ok-label"><Check size={14} />正常</span>}</td><td><QuickAdjustButton row={row} /></td></tr>)}
         </DataTable>
       ) : (
         <DataTable loading={ledger.isLoading} empty={!(ledger.data?.length)} headers={["时间", "单据", "款式 / SKU", "数量变化", "预留变化", "结存", "操作人"]}>

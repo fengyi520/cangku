@@ -19,6 +19,8 @@ import {
 import { DocumentStatus, DocumentType, Prisma, StockStatus } from "@prisma/client";
 import { createDocumentSchema, createStyleSchema, updateStyleSchema, versionSchema } from "@cangku/contracts";
 import { Request } from "express";
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { AuthUser, CurrentUser, RequirePermissions } from "./auth-context";
 import { piecesFromPackaging, quantityDeltaForDocument } from "./inventory.math";
 import { PrismaService } from "./prisma.module";
@@ -50,7 +52,7 @@ export class WarehouseService {
     const warehouse = await this.warehouse(user.organizationId);
     const [skuCount, balances, pendingApprovals, recentDocuments] = await Promise.all([
       this.prisma.sku.count({ where: { style: { organizationId: user.organizationId }, active: true } }),
-      this.prisma.stockBalance.findMany({ where: { warehouseId: warehouse.id }, select: { onHand: true, reserved: true, sku: { select: { minStock: true } } } }),
+      this.prisma.stockBalance.findMany({ where: { warehouseId: warehouse.id }, select: { status: true, onHand: true, reserved: true, sku: { select: { minStock: true } } } }),
       this.prisma.approvalTask.count({ where: { status: "PENDING", document: { organizationId: user.organizationId } } }),
       this.prisma.stockDocument.findMany({
         where: { organizationId: user.organizationId },
@@ -62,7 +64,22 @@ export class WarehouseService {
     const onHand = balances.reduce((sum, row) => sum + row.onHand, 0);
     const reserved = balances.reduce((sum, row) => sum + row.reserved, 0);
     const lowStock = balances.filter((row) => row.onHand - row.reserved <= row.sku.minStock).length;
-    return { warehouse, metrics: { skuCount, onHand, reserved, available: onHand - reserved, lowStock, pendingApprovals }, recentDocuments };
+    const byStatus = (status: StockStatus) => balances.filter((row) => row.status === status).reduce((sum, row) => sum + row.onHand, 0);
+    return {
+      warehouse,
+      metrics: {
+        skuCount,
+        onHand,
+        reserved,
+        available: onHand - reserved,
+        sellable: byStatus(StockStatus.SELLABLE),
+        inspection: byStatus(StockStatus.INSPECTION),
+        damaged: byStatus(StockStatus.DAMAGED),
+        lowStock,
+        pendingApprovals,
+      },
+      recentDocuments,
+    };
   }
 
   async listStyles(user: AuthUser, search?: string) {
@@ -212,6 +229,87 @@ export class WarehouseService {
       take: 101,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
     });
+  }
+
+  async quickAdjust(user: AuthUser, input: unknown, request: Request) {
+    const parsed = z
+      .object({
+        lines: z
+          .array(z.object({ skuId: z.string().cuid(), stockStatus: z.nativeEnum(StockStatus).default(StockStatus.SELLABLE), targetOnHand: z.number().int().min(0).max(1_000_000), note: z.string().max(200).nullish() }))
+          .min(1)
+          .max(500),
+        reason: z.string().max(200).optional(),
+      })
+      .safeParse(input);
+    if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
+    const warehouse = await this.warehouse(user.organizationId);
+    const skuIds = [...new Set(parsed.data.lines.map((line) => line.skuId))];
+    const skus = await this.prisma.sku.findMany({ where: { id: { in: skuIds }, active: true, style: { organizationId: user.organizationId } }, include: { style: true } });
+    if (skus.length !== skuIds.length) throw new BadRequestException("调整包含不存在或已停用的商品规格");
+    const skuMap = new Map(skus.map((sku) => [sku.id, sku]));
+    const reason = parsed.data.reason?.trim() || "库存快捷调整";
+    const documentNo = createDocumentNo("ADJUSTMENT");
+
+    const document = await this.serializable(async (tx) => {
+      const created = await tx.stockDocument.create({
+        data: {
+          organizationId: user.organizationId,
+          warehouseId: warehouse.id,
+          documentNo,
+          type: "ADJUSTMENT",
+          status: "POSTED",
+          reason,
+          createdById: user.id,
+          postedById: user.id,
+          postedAt: new Date(),
+          postKey: `quick-adjust-${randomUUID()}`,
+        },
+        include: { lines: true },
+      });
+      for (const line of parsed.data.lines) {
+        const balance = await tx.stockBalance.upsert({
+          where: { warehouseId_skuId_status: { warehouseId: warehouse.id, skuId: line.skuId, status: line.stockStatus } },
+          create: { warehouseId: warehouse.id, skuId: line.skuId, status: line.stockStatus },
+          update: {},
+        });
+        if (line.targetOnHand < balance.reserved) {
+          throw new ConflictException(`SKU ${skuMap.get(line.skuId)!.skuCode} 调整后 ${line.targetOnHand} 低于当前预留 ${balance.reserved}，请先释放预留`);
+        }
+        const delta = line.targetOnHand - balance.onHand;
+        if (delta === 0) continue;
+        const updated = await tx.stockBalance.update({ where: { id: balance.id }, data: { onHand: { increment: delta }, version: { increment: 1 } } });
+        const documentLine = await tx.stockDocumentLine.create({
+          data: {
+            documentId: created.id,
+            skuId: line.skuId,
+            stockStatus: line.stockStatus,
+            quantityPieces: Math.abs(delta),
+            adjustmentDelta: delta,
+            snapshotQuantity: balance.onHand,
+            note: line.note?.trim() || null,
+          },
+        });
+        await tx.inventoryLedgerEntry.create({
+          data: {
+            organizationId: user.organizationId,
+            warehouseId: warehouse.id,
+            skuId: line.skuId,
+            documentId: created.id,
+            documentLineId: documentLine.id,
+            stockStatus: line.stockStatus,
+            quantityDelta: delta,
+            reservedDelta: 0,
+            balanceAfter: updated.onHand,
+            reservedAfter: updated.reserved,
+            actorId: user.id,
+          },
+        });
+      }
+      return created;
+    });
+    await this.createLowStockNotifications(user.organizationId, warehouse.id);
+    await this.audit(user, request, "inventory.quick_adjusted", "StockDocument", document.id, null, document);
+    return document;
   }
 
   async listDocuments(user: AuthUser, type?: DocumentType) {
@@ -620,6 +718,11 @@ class InventoryController {
   @RequirePermissions("inventory.view")
   ledger(@CurrentUser() user: AuthUser, @Query("cursor") cursor?: string) {
     return this.service.ledger(user, cursor);
+  }
+  @Post("quick-adjust")
+  @RequirePermissions("documents.manage")
+  quickAdjust(@CurrentUser() user: AuthUser, @Body() input: unknown, @Req() request: Request) {
+    return this.service.quickAdjust(user, input, request);
   }
 }
 
